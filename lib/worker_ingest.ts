@@ -1,24 +1,61 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
-import type { EpisodeMetadata, JobRecord } from "@/lib/types";
+import youtubedl from "youtube-dl-exec";
+import type { EpisodeMetadata, JobRecord, SourcePlatform } from "@/lib/types";
 
 const execFileAsync = promisify(execFile);
 
-type ExtractResult = {
+export type ExtractResult = {
   metadata: EpisodeMetadata;
   workingAudioPath: string;
   originalAudioPublicPath: string | null;
 };
 
 export async function extractEpisode(job: JobRecord): Promise<ExtractResult> {
-  if (job.platform === "direct") {
-    return extractDirectAudio(job);
+  const tempDir = path.join(process.cwd(), "storage", "source");
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  return extractSourceToTemp({
+    sourceUrl: job.sourceUrl,
+    platform: job.platform,
+    id: job.id,
+    tempDir,
+    publicOriginalUrl: job.platform === "direct" ? job.sourceUrl : null,
+  });
+}
+
+export async function extractSourceToTemp(input: {
+  sourceUrl: string;
+  platform: SourcePlatform;
+  id?: string;
+  tempDir?: string;
+  publicOriginalUrl?: string | null;
+}): Promise<ExtractResult> {
+  const tempDir =
+    input.tempDir ??
+    fs.mkdtempSync(path.join(os.tmpdir(), "podcast-translation-demo-"));
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  const id = input.id ?? makeTempId();
+
+  if (input.platform === "direct") {
+    return extractDirectAudio({
+      id,
+      sourceUrl: input.sourceUrl,
+      tempDir,
+      publicOriginalUrl: input.publicOriginalUrl ?? input.sourceUrl,
+    });
   }
 
-  if (job.platform === "youtube") {
-    return extractYoutubeAudio(job);
+  if (input.platform === "youtube") {
+    return extractYoutubeAudio({
+      id,
+      sourceUrl: input.sourceUrl,
+      tempDir,
+    });
   }
 
   throw new Error(
@@ -26,10 +63,15 @@ export async function extractEpisode(job: JobRecord): Promise<ExtractResult> {
   );
 }
 
-async function extractDirectAudio(job: JobRecord): Promise<ExtractResult> {
-  const filename = `${job.id}-source.mp3`;
-  const workingAudioPath = path.join(process.cwd(), "storage", "source", filename);
-  await downloadFile(job.sourceUrl, workingAudioPath);
+async function extractDirectAudio(input: {
+  id: string;
+  sourceUrl: string;
+  tempDir: string;
+  publicOriginalUrl: string | null;
+}): Promise<ExtractResult> {
+  const filename = `${input.id}-source.mp3`;
+  const workingAudioPath = path.join(input.tempDir, filename);
+  await downloadFile(input.sourceUrl, workingAudioPath);
 
   return {
     metadata: {
@@ -37,59 +79,49 @@ async function extractDirectAudio(job: JobRecord): Promise<ExtractResult> {
       showTitle: "Imported audio",
       durationSeconds: await getAudioDurationSeconds(workingAudioPath),
       coverUrl: null,
-      sourceUrl: job.sourceUrl,
+      sourceUrl: input.sourceUrl,
       platform: "direct",
     },
     workingAudioPath,
-    originalAudioPublicPath: job.sourceUrl,
+    originalAudioPublicPath: input.publicOriginalUrl,
   };
 }
 
-async function extractYoutubeAudio(job: JobRecord): Promise<ExtractResult> {
-  const ytDlpAvailable = await hasYtDlpBinary();
-  if (!ytDlpAvailable) {
-    throw new Error(
-      "yt-dlp is required for YouTube extraction. Install it or use a direct audio URL instead.",
-    );
-  }
+async function extractYoutubeAudio(input: {
+  id: string;
+  sourceUrl: string;
+  tempDir: string;
+}): Promise<ExtractResult> {
+  const outputPath = path.join(input.tempDir, `${input.id}.mp3`);
 
-  const rawInfo = await execFileAsync("yt-dlp", [
-    "--dump-single-json",
-    "--no-warnings",
-    "--no-check-certificates",
-    "--skip-download",
-    job.sourceUrl,
-  ]);
-  const info = JSON.parse(rawInfo.stdout) as {
+  const info = (await youtubedl(input.sourceUrl, {
+    dumpSingleJson: true,
+    noWarnings: true,
+    noCheckCertificates: true,
+    skipDownload: true,
+  })) as {
     title?: string;
     channel?: string;
     thumbnail?: string;
     duration?: number;
   };
 
-  const outputPath = path.join(process.cwd(), "storage", "source", `${job.id}.mp3`);
-
-  await execFileAsync("yt-dlp", [
-    "--extract-audio",
-    "--audio-format",
-    "mp3",
-    "--audio-quality",
-    "0",
-    "--output",
-    outputPath,
-    "--no-warnings",
-    "--no-check-certificates",
-    job.sourceUrl,
-  ]);
+  await youtubedl(input.sourceUrl, {
+    extractAudio: true,
+    audioFormat: "mp3",
+    audioQuality: 0,
+    output: outputPath,
+    noWarnings: true,
+    noCheckCertificates: true,
+  });
 
   return {
     metadata: {
       title: info.title ?? "YouTube episode",
       showTitle: info.channel ?? "YouTube",
-      durationSeconds:
-        info.duration ?? (await getAudioDurationSeconds(outputPath)),
+      durationSeconds: info.duration ?? (await getAudioDurationSeconds(outputPath)),
       coverUrl: info.thumbnail ?? null,
-      sourceUrl: job.sourceUrl,
+      sourceUrl: input.sourceUrl,
       platform: "youtube",
     },
     workingAudioPath: outputPath,
@@ -120,11 +152,6 @@ async function getAudioDurationSeconds(filePath: string) {
   return Math.round(Number.parseFloat(stdout.trim()));
 }
 
-async function hasYtDlpBinary() {
-  try {
-    await execFileAsync("yt-dlp", ["--version"]);
-    return true;
-  } catch {
-    return false;
-  }
+function makeTempId() {
+  return `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }

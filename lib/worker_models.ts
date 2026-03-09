@@ -132,12 +132,22 @@ export async function synthesizeChineseAudio(
   jobId: string,
   segments: TranscriptSegment[],
 ): Promise<string> {
+  const audioBase64 = await synthesizeChineseAudioBase64(segments);
+  const outputPath = path.join(process.cwd(), "storage", "output", `${jobId}.mp3`);
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, Buffer.from(audioBase64, "base64"));
+  return outputPath;
+}
+
+export async function synthesizeChineseAudioBase64(
+  segments: TranscriptSegment[],
+): Promise<string> {
   const text = segments
     .map((segment) => segment.translatedText || segment.sourceText)
     .join(" ");
 
   if (!hasMiniMax()) {
-    return createMockAudio(jobId, text);
+    return createMockAudioBase64(text);
   }
 
   const response = await fetch(`${env.miniMaxBaseUrl}/v1/t2a_v2?GroupId=${env.miniMaxGroupId}`, {
@@ -165,7 +175,8 @@ export async function synthesizeChineseAudio(
   });
 
   if (!response.ok) {
-    throw new Error("MiniMax speech generation failed.");
+    const detail = await response.text();
+    throw new Error(`MiniMax speech generation failed: ${detail}`);
   }
 
   const data = (await response.json()) as {
@@ -176,9 +187,7 @@ export async function synthesizeChineseAudio(
     throw new Error("MiniMax did not return audio data.");
   }
 
-  const outputPath = path.join(process.cwd(), "storage", "output", `${jobId}.mp3`);
-  fs.writeFileSync(outputPath, Buffer.from(audio, "base64"));
-  return outputPath;
+  return audio;
 }
 
 function createMockTranscript(): TranscriptSegment[] {
@@ -204,8 +213,14 @@ function createMockTranscript(): TranscriptSegment[] {
   ];
 }
 
-async function createMockAudio(jobId: string, text: string) {
-  const outputPath = path.join(process.cwd(), "storage", "output", `${jobId}.mp3`);
+async function createMockAudioBase64(text: string) {
+  const outputPath = path.join(
+    process.cwd(),
+    "storage",
+    "output",
+    `mock-${Date.now()}.mp3`,
+  );
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   const safeText = text.replace(/[^a-zA-Z0-9 .,]/g, " ").slice(0, 150);
 
   try {
@@ -234,5 +249,7 @@ async function createMockAudio(jobId: string, text: string) {
     ]);
   }
 
-  return outputPath;
+  const audio = fs.readFileSync(outputPath).toString("base64");
+  fs.unlinkSync(outputPath);
+  return audio;
 }
