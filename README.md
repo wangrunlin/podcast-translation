@@ -1,36 +1,60 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Podcast Translation Demo
 
-## Getting Started
+A local-first demo for the PRD in `jarvis-memory`.
 
-First, run the development server:
+- paste one episode URL
+- process asynchronously
+- return playable Chinese audio
+- show original / translated / bilingual transcript
+- keep recent history per anonymous browser session
+
+## Stack
+
+- `Next.js 16`
+- `SQLite` via `better-sqlite3`
+- `OpenRouter` for ASR + translation
+- `MiniMax` for Chinese TTS
+- mock fallbacks when API keys are missing
+
+## Run locally
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Copy envs:
+
+```bash
+cp .env.example .env.local
+```
+
+3. Start the app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+4. Open `http://localhost:3000`
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Required local tools
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `ffmpeg`
+- `ffprobe`
+- `yt-dlp` for YouTube podcast extraction
 
-## Learn More
+If `yt-dlp` is missing, the app still works with direct audio URLs.
 
-To learn more about Next.js, take a look at the following resources:
+## Environment variables
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_BASE_URL`
+- `OPENROUTER_ASR_MODEL`
+- `OPENROUTER_TRANSLATION_MODEL`
+- `MINIMAX_API_KEY`
+- `MINIMAX_GROUP_ID`
+- `MINIMAX_BASE_URL`
+- `MINIMAX_TTS_MODEL`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Without these keys, the app falls back to mock transcript and mock audio generation so the full UI and async job flow remain testable.
