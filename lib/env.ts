@@ -11,6 +11,8 @@ export const env = {
   miniMaxGroupId: process.env.MINIMAX_GROUP_ID ?? "",
   miniMaxBaseUrl: process.env.MINIMAX_BASE_URL ?? "https://api.minimax.io",
   miniMaxTtsModel: process.env.MINIMAX_TTS_MODEL ?? "speech-2.8-hd",
+  miniMaxVoiceCloneModel:
+    process.env.MINIMAX_VOICE_CLONE_MODEL ?? "speech-2.8-hd",
 };
 
 export function hasOpenRouter() {

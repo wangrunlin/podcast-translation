@@ -3,8 +3,9 @@
 A local-first demo for the PRD in `jarvis-memory`.
 
 - paste one episode URL
-- process asynchronously
+- process through the main jobs flow
 - return playable Chinese audio
+- keep the result close to the original speaker when voice clone succeeds
 - show original / translated / bilingual transcript
 - keep recent history per anonymous browser session
 
@@ -13,7 +14,7 @@ A local-first demo for the PRD in `jarvis-memory`.
 - `Next.js 16`
 - `SQLite` via `better-sqlite3`
 - `OpenRouter` for ASR + translation
-- `MiniMax Speech 2.8 HD` for Chinese TTS
+- `MiniMax Speech 2.8 HD` for Chinese voice-preserving TTS
 - mock fallbacks when API keys are missing
 
 ## Run locally
@@ -38,13 +39,11 @@ npm run dev
 
 4. Open `http://localhost:3000`
 
-## Required local tools
+## Runtime notes
 
-- `ffmpeg`
-- `ffprobe`
-- `yt-dlp` for YouTube podcast extraction
-
-If `yt-dlp` is missing, the app still works with direct audio URLs.
+- The app bundles static `ffmpeg`, `ffprobe`, and `yt-dlp` fallbacks.
+- Apple Podcasts episode links are resolved to the exact episode instead of guessing from the show feed.
+- The homepage is the main product flow. `/demo` is only for provider debugging.
 
 ## Environment variables
 
@@ -56,6 +55,7 @@ If `yt-dlp` is missing, the app still works with direct audio URLs.
 - `MINIMAX_GROUP_ID`
 - `MINIMAX_BASE_URL`
 - `MINIMAX_TTS_MODEL`
+- `MINIMAX_VOICE_CLONE_MODEL`
 
 Recommended MiniMax base URLs:
 

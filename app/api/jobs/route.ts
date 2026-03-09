@@ -16,9 +16,16 @@ export async function POST(request: NextRequest) {
 
   try {
     const job = createJob(parsed.data);
-    enqueueJob(job.id);
+    const cacheHit = job.status === "completed";
+    if (!cacheHit) {
+      enqueueJob(job.id);
+    }
 
-    return NextResponse.json({ jobId: job.id, redirectTo: `/jobs/${job.id}` });
+    return NextResponse.json({
+      jobId: job.id,
+      redirectTo: `/jobs/${job.id}`,
+      cacheHit,
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to create this job.";

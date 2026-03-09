@@ -23,6 +23,7 @@ export type JobRecord = {
   id: string;
   sessionId: string;
   sourceUrl: string;
+  sourceFingerprint: string;
   sourceType: string;
   platform: SourcePlatform;
   targetLanguage: string;
@@ -36,6 +37,8 @@ export type JobRecord = {
   errorMessage: string | null;
   audioOriginalPath: string | null;
   audioTranslatedPath: string | null;
+  cloneVoiceId: string | null;
+  cloneStatus: "pending" | "ready" | "failed" | null;
   transcriptOriginal: TranscriptSegment[];
   transcriptTranslated: TranscriptSegment[];
   transcriptBilingual: TranscriptSegment[];

@@ -37,12 +37,12 @@ export async function processJob(jobId: string) {
 
     if (
       extracted.metadata.durationSeconds &&
-      extracted.metadata.durationSeconds > 20 * 60
+      extracted.metadata.durationSeconds > 30 * 60
     ) {
       failJob(
         job.id,
         "duration_limit",
-        "This episode is over the 20 minute demo limit. Try a shorter episode.",
+        "This episode is over the 30 minute MVP limit. Try a shorter episode.",
       );
       return;
     }
@@ -76,11 +76,18 @@ export async function processJob(jobId: string) {
     });
 
     setJobStage(job.id, "synthesizing");
-    const outputAudio = await synthesizeChineseAudio(job.id, translatedSegments);
+    const synthesis = await synthesizeChineseAudio(job.id, translatedSegments, {
+      sourceAudioPath: extracted.workingAudioPath,
+      originalSegments,
+    });
 
     setJobStage(job.id, "packaging");
-    const publicAudioPath = copyOutputToPublic(job.id, outputAudio);
-    updateJob(job.id, { audioTranslatedPath: publicAudioPath });
+    const publicAudioPath = copyOutputToPublic(job.id, synthesis.outputPath);
+    updateJob(job.id, {
+      audioTranslatedPath: publicAudioPath,
+      cloneStatus: synthesis.cloneStatus,
+      cloneVoiceId: synthesis.cloneVoiceId,
+    });
 
     completeJob(job.id);
   } catch (error) {

@@ -90,14 +90,34 @@ export function JobDetail({ initialJob }: JobDetailProps) {
         )}
 
         {job.status === "completed" && job.audioTranslatedPath ? (
-          <div className="mt-6 rounded-[28px] border border-[var(--line)] bg-white/80 p-5">
-            <p className="text-sm font-semibold">Translated audio</p>
-            <audio
-              controls
-              className="mt-4 w-full"
-              src={job.audioTranslatedPath}
-              preload="metadata"
-            />
+          <div className="mt-6 space-y-4 rounded-[28px] border border-[var(--line)] bg-white/80 p-5">
+            <div>
+              <p className="text-sm font-semibold">Translated audio</p>
+              <audio
+                controls
+                className="mt-4 w-full"
+                src={job.audioTranslatedPath}
+                preload="metadata"
+              />
+            </div>
+            {job.audioOriginalPath ? (
+              <div>
+                <p className="text-sm font-semibold">Original audio</p>
+                <audio
+                  controls
+                  className="mt-4 w-full"
+                  src={job.audioOriginalPath}
+                  preload="metadata"
+                />
+              </div>
+            ) : null}
+            <div className="rounded-2xl border border-[var(--line)] bg-[var(--card-strong)] px-4 py-3 text-sm text-[var(--ink-soft)]">
+              {job.cloneStatus === "ready"
+                ? "Voice clone was applied to keep the Chinese voice close to the original speaker."
+                : job.cloneStatus === "failed"
+                  ? "Translation succeeded, but preserving the original speaker timbre failed for this run."
+                  : "Voice preservation was not available for this source."}
+            </div>
           </div>
         ) : null}
 

@@ -12,6 +12,7 @@ type DbJob = {
   id: string;
   session_id: string;
   source_url: string;
+  source_fingerprint: string;
   source_type: string;
   platform: SourcePlatform;
   target_language: string;
@@ -25,6 +26,8 @@ type DbJob = {
   error_message: string | null;
   audio_original_path: string | null;
   audio_translated_path: string | null;
+  clone_voice_id: string | null;
+  clone_status: "pending" | "ready" | "failed" | null;
   transcript_original_json: string;
   transcript_translated_json: string;
   transcript_bilingual_json: string;
@@ -53,11 +56,19 @@ function detectPlatform(sourceUrl: string): SourcePlatform {
 
 export function createJob(input: CreateJobInput) {
   const platform = detectPlatform(input.sourceUrl);
+  const sourceFingerprint = createSourceFingerprint(input.sourceUrl, platform);
 
   if (platform === "unknown") {
     throw new Error(
-      "This demo currently supports Apple Podcasts, YouTube podcast URLs, or direct audio files.",
+      "This app currently supports Apple Podcasts episode links, YouTube single-video links, or direct audio files.",
     );
+  }
+
+  validateSourceUrl(input.sourceUrl, platform);
+
+  const cached = getCompletedJobByFingerprint(sourceFingerprint);
+  if (cached) {
+    return cached;
   }
 
   const now = new Date().toISOString();
@@ -67,14 +78,15 @@ export function createJob(input: CreateJobInput) {
     `
       INSERT INTO jobs (
         id, session_id, source_url, source_type, platform, target_language,
+        source_fingerprint,
         title, show_title, cover_url, duration_seconds, status, current_stage,
-        error_code, error_message, audio_original_path, audio_translated_path,
+        error_code, error_message, audio_original_path, audio_translated_path, clone_voice_id, clone_status,
         transcript_original_json, transcript_translated_json, transcript_bilingual_json,
         created_at, updated_at, completed_at
       ) VALUES (
-        @id, @sessionId, @sourceUrl, @sourceType, @platform, @targetLanguage,
+        @id, @sessionId, @sourceUrl, @sourceType, @platform, @targetLanguage, @sourceFingerprint,
         NULL, NULL, NULL, NULL, 'queued', 'queued',
-        NULL, NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL, NULL, 'pending',
         '[]', '[]', '[]',
         @createdAt, @updatedAt, NULL
       )
@@ -86,6 +98,7 @@ export function createJob(input: CreateJobInput) {
     sourceType: platform === "direct" ? "audio-url" : "page-url",
     platform,
     targetLanguage: input.targetLanguage,
+    sourceFingerprint,
     createdAt: now,
     updatedAt: now,
   });
@@ -102,6 +115,16 @@ export function getJobById(id: string) {
   const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get(id) as
     | DbJob
     | undefined;
+
+  return row ? mapJob(row) : null;
+}
+
+export function getCompletedJobByFingerprint(sourceFingerprint: string) {
+  const row = db
+    .prepare(
+      "SELECT * FROM jobs WHERE source_fingerprint = ? AND status = 'completed' ORDER BY updated_at DESC LIMIT 1",
+    )
+    .get(sourceFingerprint) as DbJob | undefined;
 
   return row ? mapJob(row) : null;
 }
@@ -143,12 +166,15 @@ export function updateJob(id: string, patch: Partial<JobRecord>) {
         show_title = @showTitle,
         cover_url = @coverUrl,
         duration_seconds = @durationSeconds,
+        source_fingerprint = @sourceFingerprint,
         status = @status,
         current_stage = @currentStage,
         error_code = @errorCode,
         error_message = @errorMessage,
         audio_original_path = @audioOriginalPath,
         audio_translated_path = @audioTranslatedPath,
+        clone_voice_id = @cloneVoiceId,
+        clone_status = @cloneStatus,
         transcript_original_json = @transcriptOriginalJson,
         transcript_translated_json = @transcriptTranslatedJson,
         transcript_bilingual_json = @transcriptBilingualJson,
@@ -162,12 +188,15 @@ export function updateJob(id: string, patch: Partial<JobRecord>) {
     showTitle: next.showTitle,
     coverUrl: next.coverUrl,
     durationSeconds: next.durationSeconds,
+    sourceFingerprint: next.sourceFingerprint,
     status: next.status,
     currentStage: next.currentStage,
     errorCode: next.errorCode,
     errorMessage: next.errorMessage,
     audioOriginalPath: next.audioOriginalPath,
     audioTranslatedPath: next.audioTranslatedPath,
+    cloneVoiceId: next.cloneVoiceId,
+    cloneStatus: next.cloneStatus,
     transcriptOriginalJson: JSON.stringify(next.transcriptOriginal),
     transcriptTranslatedJson: JSON.stringify(next.transcriptTranslated),
     transcriptBilingualJson: JSON.stringify(next.transcriptBilingual),
@@ -228,6 +257,8 @@ export function resetJob(id: string) {
     errorCode: null,
     errorMessage: null,
     completedAt: null,
+    cloneStatus: "pending",
+    cloneVoiceId: null,
   });
 }
 
@@ -250,6 +281,7 @@ function mapJob(row: DbJob): JobRecord {
     id: row.id,
     sessionId: row.session_id,
     sourceUrl: row.source_url,
+    sourceFingerprint: row.source_fingerprint,
     sourceType: row.source_type,
     platform: row.platform,
     targetLanguage: row.target_language,
@@ -263,6 +295,8 @@ function mapJob(row: DbJob): JobRecord {
     errorMessage: row.error_message,
     audioOriginalPath: row.audio_original_path,
     audioTranslatedPath: row.audio_translated_path,
+    cloneVoiceId: row.clone_voice_id,
+    cloneStatus: row.clone_status,
     transcriptOriginal: JSON.parse(row.transcript_original_json) as TranscriptSegment[],
     transcriptTranslated: JSON.parse(
       row.transcript_translated_json,
@@ -272,4 +306,54 @@ function mapJob(row: DbJob): JobRecord {
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
   };
+}
+
+function createSourceFingerprint(sourceUrl: string, platform: SourcePlatform) {
+  if (platform === "apple") {
+    const url = new URL(sourceUrl);
+    const episodeId = url.searchParams.get("i");
+    const collectionId = sourceUrl.match(/\/id(\d+)/i)?.[1] ?? "unknown";
+
+    if (episodeId) {
+      return `apple:${collectionId}:${episodeId}`;
+    }
+
+    return `apple-show:${collectionId}`;
+  }
+
+  if (platform === "youtube") {
+    const url = new URL(sourceUrl);
+    const videoId =
+      url.searchParams.get("v") ??
+      (url.hostname.includes("youtu.be") ? url.pathname.replace("/", "") : null);
+
+    return videoId ? `youtube:${videoId}` : `youtube:${sourceUrl.trim()}`;
+  }
+
+  if (platform === "direct") {
+    return `direct:${hashValue(sourceUrl.trim())}`;
+  }
+
+  return `unknown:${hashValue(sourceUrl.trim())}`;
+}
+
+function hashValue(value: string) {
+  return crypto.createHash("sha1").update(value).digest("hex");
+}
+
+function validateSourceUrl(sourceUrl: string, platform: SourcePlatform) {
+  const url = new URL(sourceUrl);
+
+  if (platform === "apple" && !url.searchParams.get("i")) {
+    throw new Error("Please paste a single Apple Podcasts episode link, not a show page.");
+  }
+
+  if (platform === "youtube") {
+    const videoId =
+      url.searchParams.get("v") ??
+      (url.hostname.includes("youtu.be") ? url.pathname.replace("/", "") : null);
+    if (!videoId) {
+      throw new Error("Please paste a single YouTube video link, not a channel or playlist.");
+    }
+  }
 }

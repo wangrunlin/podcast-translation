@@ -2,10 +2,16 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
+import ffmpegPath from "ffmpeg-static";
 import { env, hasMiniMax, hasOpenRouter } from "@/lib/env";
 import type { TranscriptSegment } from "@/lib/types";
 
 const execFileAsync = promisify(execFile);
+
+type VoiceCloneResult = {
+  voiceId: string | null;
+  cloneStatus: "ready" | "failed" | null;
+};
 
 export async function transcribeAudio(audioPath: string): Promise<TranscriptSegment[]> {
   if (!hasOpenRouter()) {
@@ -20,7 +26,7 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
       Authorization: `Bearer ${env.openRouterApiKey}`,
       "Content-Type": "application/json",
       "HTTP-Referer": "http://localhost:3000",
-      "X-OpenRouter-Title": "Podcast Translation Demo",
+      "X-OpenRouter-Title": "Podcast Translation MVP",
     },
     body: JSON.stringify({
       model: env.openRouterAsrModel,
@@ -36,7 +42,7 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
           content: [
             {
               type: "text",
-              text: "Transcribe this English podcast audio. Keep 6-12 segments total for demo output.",
+              text: "Transcribe this English podcast audio. Keep the wording faithful. Return 8-24 timestamped segments.",
             },
             {
               type: "input_audio",
@@ -88,7 +94,7 @@ export async function translateSegments(
       Authorization: `Bearer ${env.openRouterApiKey}`,
       "Content-Type": "application/json",
       "HTTP-Referer": "http://localhost:3000",
-      "X-OpenRouter-Title": "Podcast Translation Demo",
+      "X-OpenRouter-Title": "Podcast Translation MVP",
     },
     body: JSON.stringify({
       model: env.openRouterTranslationModel,
@@ -97,7 +103,7 @@ export async function translateSegments(
         {
           role: "system",
           content:
-            'Translate the transcript into natural simplified Chinese. Return strict JSON: {"segments":[{"startMs":0,"endMs":1000,"sourceText":"...","translatedText":"..."}]}',
+            'Translate the transcript into natural simplified Chinese for audio listening. Return strict JSON: {"segments":[{"startMs":0,"endMs":1000,"sourceText":"...","translatedText":"..."}]}',
         },
         {
           role: "user",
@@ -132,16 +138,32 @@ export async function translateSegments(
 export async function synthesizeChineseAudio(
   jobId: string,
   segments: TranscriptSegment[],
-): Promise<string> {
-  const audioBase64 = await synthesizeChineseAudioBase64(segments);
+  options?: {
+    sourceAudioPath?: string | null;
+    originalSegments?: TranscriptSegment[];
+  },
+): Promise<{ outputPath: string; cloneStatus: "ready" | "failed" | null; cloneVoiceId: string | null }> {
+  const clone = await maybeCreateVoiceClone(
+    jobId,
+    options?.sourceAudioPath ?? null,
+    options?.originalSegments ?? [],
+  );
+  const audioBase64 = await synthesizeChineseAudioBase64(segments, {
+    voiceId: clone.voiceId,
+  });
   const outputPath = path.join(process.cwd(), "storage", "output", `${jobId}.mp3`);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, Buffer.from(audioBase64, "base64"));
-  return outputPath;
+  return {
+    outputPath,
+    cloneStatus: clone.cloneStatus,
+    cloneVoiceId: clone.voiceId,
+  };
 }
 
 export async function synthesizeChineseAudioBase64(
   segments: TranscriptSegment[],
+  options?: { voiceId?: string | null },
 ): Promise<string> {
   const text = segments
     .map((segment) => segment.translatedText || segment.sourceText)
@@ -151,31 +173,33 @@ export async function synthesizeChineseAudioBase64(
     return createMockAudioBase64(text);
   }
 
+  const payload = {
+    model: env.miniMaxTtsModel,
+    text,
+    stream: false,
+    language_boost: "Chinese",
+    output_format: "hex",
+    voice_setting: {
+      voice_id: options?.voiceId ?? "Chinese (Mandarin)_Warm_Girl",
+      speed: 1,
+      vol: 1,
+      pitch: 0,
+    },
+    audio_setting: {
+      sample_rate: 32000,
+      bitrate: 128000,
+      format: "mp3",
+      channel: 1,
+    },
+  };
+
   const response = await fetch(`${env.miniMaxBaseUrl}/v1/t2a_v2?GroupId=${env.miniMaxGroupId}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.miniMaxApiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model: env.miniMaxTtsModel,
-      text,
-      stream: false,
-      language_boost: "Chinese",
-      output_format: "hex",
-      voice_setting: {
-        voice_id: "Chinese (Mandarin)_Warm_Girl",
-        speed: 1,
-        vol: 1,
-        pitch: 0,
-      },
-      audio_setting: {
-        sample_rate: 32000,
-        bitrate: 128000,
-        format: "mp3",
-        channel: 1,
-      },
-    }),
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
@@ -197,6 +221,160 @@ export async function synthesizeChineseAudioBase64(
   }
 
   return Buffer.from(audioHex, "hex").toString("base64");
+}
+
+async function maybeCreateVoiceClone(
+  jobId: string,
+  sourceAudioPath: string | null,
+  originalSegments: TranscriptSegment[],
+): Promise<VoiceCloneResult> {
+  if (!hasMiniMax() || !sourceAudioPath || originalSegments.length === 0 || !ffmpegPath) {
+    return { voiceId: null, cloneStatus: null };
+  }
+
+  try {
+    const clip = await extractVoiceCloneSample(jobId, sourceAudioPath, originalSegments);
+    if (!clip) {
+      return { voiceId: null, cloneStatus: "failed" };
+    }
+
+    const voiceId = await createMiniMaxVoiceClone(clip.samplePath, clip.promptText, jobId);
+    if (!voiceId) {
+      return { voiceId: null, cloneStatus: "failed" };
+    }
+
+    return {
+      voiceId,
+      cloneStatus: "ready",
+    };
+  } catch {
+    return { voiceId: null, cloneStatus: "failed" };
+  }
+}
+
+async function extractVoiceCloneSample(
+  jobId: string,
+  sourceAudioPath: string,
+  originalSegments: TranscriptSegment[],
+) {
+  const candidate = [...originalSegments]
+    .filter((segment) => segment.endMs > segment.startMs && segment.sourceText.trim().length > 40)
+    .sort(
+      (a, b) =>
+        b.endMs - b.startMs - (a.endMs - a.startMs) ||
+        b.sourceText.length - a.sourceText.length,
+    )[0];
+
+  if (!candidate) {
+    return null;
+  }
+
+  const startSeconds = Math.max(candidate.startMs / 1000, 0);
+  const rawDurationSeconds = Math.max((candidate.endMs - candidate.startMs) / 1000, 0);
+  const durationSeconds = Math.max(8, Math.min(28, rawDurationSeconds));
+  const samplePath = path.join(process.cwd(), "storage", "output", `${jobId}-clone-sample.mp3`);
+  const ffmpegBinary = getFfmpegBinary();
+  if (!ffmpegBinary) {
+    return null;
+  }
+
+  fs.mkdirSync(path.dirname(samplePath), { recursive: true });
+  await execFileAsync(ffmpegBinary, [
+    "-ss",
+    `${startSeconds}`,
+    "-t",
+    `${durationSeconds}`,
+    "-i",
+    sourceAudioPath,
+    "-ac",
+    "1",
+    "-ar",
+    "32000",
+    "-c:a",
+    "libmp3lame",
+    "-b:a",
+    "128k",
+    samplePath,
+    "-y",
+  ]);
+
+  return {
+    samplePath,
+    promptText: candidate.sourceText.slice(0, 320),
+  };
+}
+
+async function createMiniMaxVoiceClone(
+  samplePath: string,
+  promptText: string,
+  jobId: string,
+) {
+  const fileId = await uploadMiniMaxFile(samplePath);
+  const payload = {
+    model: env.miniMaxVoiceCloneModel,
+    voice_id: `podcast-${jobId}`,
+    file_id: fileId,
+    prompt: promptText,
+  };
+
+  const response = await fetch(
+    `${env.miniMaxBaseUrl}/v1/voice_clone?GroupId=${env.miniMaxGroupId}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.miniMaxApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const data = (await response.json()) as {
+    voice_id?: string;
+    data?: { voice_id?: string };
+  };
+
+  return data.data?.voice_id ?? data.voice_id ?? payload.voice_id;
+}
+
+async function uploadMiniMaxFile(filePath: string) {
+  const form = new FormData();
+  const bytes = fs.readFileSync(filePath);
+  form.append("purpose", "voice_clone");
+  form.append(
+    "file",
+    new Blob([bytes], { type: "audio/mpeg" }),
+    path.basename(filePath),
+  );
+
+  const response = await fetch(`${env.miniMaxBaseUrl}/v1/files/upload?GroupId=${env.miniMaxGroupId}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.miniMaxApiKey}`,
+    },
+    body: form,
+  });
+
+  if (!response.ok) {
+    throw new Error(`MiniMax file upload failed: ${await response.text()}`);
+  }
+
+  const data = (await response.json()) as {
+    file?: { file_id?: string };
+    data?: { file?: { file_id?: string }; file_id?: string };
+    file_id?: string;
+  };
+
+  const fileId = data.data?.file?.file_id ?? data.data?.file_id ?? data.file?.file_id ?? data.file_id;
+  if (!fileId) {
+    throw new Error("MiniMax file upload did not return a file_id.");
+  }
+
+  return fileId;
 }
 
 function createMockTranscript(): TranscriptSegment[] {
@@ -233,7 +411,11 @@ async function createMockAudioBase64(text: string) {
   const safeText = text.replace(/[^a-zA-Z0-9 .,]/g, " ").slice(0, 150);
 
   try {
-    await execFileAsync("ffmpeg", [
+    if (!ffmpegPath) {
+      throw new Error("ffmpeg unavailable");
+    }
+
+    await execFileAsync(ffmpegPath, [
       "-f",
       "lavfi",
       "-i",
@@ -246,7 +428,12 @@ async function createMockAudioBase64(text: string) {
       "-y",
     ]);
   } catch {
-    await execFileAsync("ffmpeg", [
+    const ffmpegBinary = getFfmpegBinary();
+    if (!ffmpegBinary) {
+      return Buffer.from("mock-audio").toString("base64");
+    }
+
+    await execFileAsync(ffmpegBinary, [
       "-f",
       "lavfi",
       "-i",
@@ -274,4 +461,18 @@ function detectAudioFormat(audioPath: string) {
   }
 
   return "mp3";
+}
+
+function getFfmpegBinary() {
+  if (!ffmpegPath) {
+    return null;
+  }
+
+  try {
+    fs.chmodSync(ffmpegPath, 0o755);
+  } catch {
+    // Best effort only.
+  }
+
+  return ffmpegPath;
 }

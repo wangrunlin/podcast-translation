@@ -5,12 +5,12 @@ import type { TranscriptSegment } from "@/lib/types";
 
 const SAMPLE_LINKS = [
   {
-    label: "Apple / English in a Minute",
-    url: "https://podcasts.apple.com/us/podcast/english-in-a-minute/id1617614727?uo=4",
+    label: "Apple / AI Daily Brief",
+    url: "https://podcasts.apple.com/us/podcast/the-ai-daily-brief-artificial-intelligence-news-and-analysis/id1680633614?i=1000753866285",
   },
   {
-    label: "Apple / 60-Second Mind",
-    url: "https://podcasts.apple.com/us/podcast/60-second-mind/id262750202?uo=4",
+    label: "Apple / Lex #491 OpenClaw",
+    url: "https://podcasts.apple.com/cn/podcast/491-openclaw-the-viral-ai-agent-that-broke-the/id1434243584?i=1000749366733",
   },
   {
     label: "YouTube / TED-Ed",

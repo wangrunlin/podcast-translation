@@ -2,10 +2,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
-import { execFile, spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { XMLParser } from "fast-xml-parser";
+import ffmpegPath from "ffmpeg-static";
+import ffprobe from "ffprobe-static";
 import { Innertube } from "youtubei.js";
-import youtubedl from "youtube-dl-exec";
+import YTDlpWrap from "yt-dlp-wrap";
 import type {
   EpisodeMetadata,
   JobRecord,
@@ -14,6 +16,14 @@ import type {
 } from "@/lib/types";
 
 const execFileAsync = promisify(execFile);
+const xmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "",
+  trimValues: true,
+  parseTagValue: false,
+});
+
+const ytDlpCacheDir = path.join(process.cwd(), "storage", "bin");
 
 export type ExtractResult = {
   metadata: EpisodeMetadata;
@@ -79,7 +89,7 @@ export async function extractSourceToTemp(input: {
   }
 
   throw new Error(
-    "This platform is not wired in this demo yet. Try Apple Podcasts, YouTube, or a direct audio URL.",
+    "This platform is not wired in this MVP yet. Try an Apple Podcasts episode link, a YouTube single-video URL, or a direct audio URL.",
   );
 }
 
@@ -121,54 +131,45 @@ async function extractYoutubeAudio(input: {
   const metadata = await getYoutubeMetadata(input.sourceUrl);
 
   if (transcriptOriginal.length > 0) {
+    const audioDownload = await tryDownloadYoutubeAudio(input.id, input.sourceUrl, input.tempDir);
     return {
       metadata: {
         title: metadata.title ?? "YouTube episode",
         showTitle: metadata.showTitle ?? "YouTube",
-        durationSeconds: metadata.durationSeconds,
+        durationSeconds:
+          metadata.durationSeconds ??
+          (audioDownload && !input.skipDurationProbe
+            ? await getAudioDurationSeconds(audioDownload)
+            : null),
         coverUrl: metadata.coverUrl,
         sourceUrl: input.sourceUrl,
         platform: "youtube",
       },
-      workingAudioPath: null,
+      workingAudioPath: audioDownload,
       originalAudioPublicPath: null,
       transcriptOriginal,
     };
   }
 
-  if (!canUseYtDlpFallback()) {
+  const audioDownload = await tryDownloadYoutubeAudio(input.id, input.sourceUrl, input.tempDir);
+  if (!audioDownload) {
     throw new Error(
-      "This YouTube video could not expose a usable English transcript in the current runtime. Try another YouTube video with captions, or use Apple Podcasts / direct audio instead.",
+      "This YouTube video could not expose a usable transcript or downloadable audio in the current runtime. Try another single-video link, or use Apple Podcasts instead.",
     );
   }
 
-  const outputTemplate = path.join(input.tempDir, `${input.id}.%(ext)s`);
-
-  const info = await getYoutubeMetadataViaYtDlp(input.sourceUrl);
-
-  await youtubedl(input.sourceUrl, {
-    format: "bestaudio/best",
-    output: outputTemplate,
-    noWarnings: true,
-    noCheckCertificates: true,
-  });
-
-  const workingAudioPath = findDownloadedFile(input.tempDir, input.id);
-
   return {
     metadata: {
-      title: info.title ?? "YouTube episode",
-      showTitle: info.showTitle ?? "YouTube",
+      title: metadata.title ?? "YouTube episode",
+      showTitle: metadata.showTitle ?? "YouTube",
       durationSeconds:
-        info.durationSeconds ??
-        (input.skipDurationProbe
-          ? null
-          : await getAudioDurationSeconds(workingAudioPath)),
-      coverUrl: info.coverUrl ?? null,
+        metadata.durationSeconds ??
+        (input.skipDurationProbe ? null : await getAudioDurationSeconds(audioDownload)),
+      coverUrl: metadata.coverUrl ?? null,
       sourceUrl: input.sourceUrl,
       platform: "youtube",
     },
-    workingAudioPath,
+    workingAudioPath: audioDownload,
     originalAudioPublicPath: null,
     transcriptOriginal: null,
   };
@@ -180,26 +181,35 @@ async function extractAppleAudio(input: {
   tempDir: string;
   skipDurationProbe: boolean;
 }): Promise<ExtractResult> {
-  const collectionId = extractAppleCollectionId(input.sourceUrl);
-  if (!collectionId) {
+  const appleIds = extractAppleIds(input.sourceUrl);
+  if (!appleIds.collectionId) {
     throw new Error("Unable to read the Apple Podcasts show id from this URL.");
+  }
+  if (!appleIds.episodeId) {
+    throw new Error("Please paste a single Apple Podcasts episode link, not a show page.");
   }
 
   const lookup = await fetchJson<AppleLookupResponse>(
-    `https://itunes.apple.com/lookup?id=${collectionId}`,
+    `https://itunes.apple.com/lookup?id=${appleIds.collectionId}&media=podcast&entity=podcastEpisode&limit=200`,
   );
-  const show = lookup.results?.find((item) => item.feedUrl);
+  const show = lookup.results?.find((item) => item.kind === "podcast" && item.feedUrl);
+  const targetEpisode = lookup.results?.find(
+    (item) => item.kind === "podcast-episode" && String(item.trackId) === appleIds.episodeId,
+  );
 
   if (!show?.feedUrl) {
     throw new Error("Apple Podcasts lookup did not return a public RSS feed.");
   }
+  if (!targetEpisode) {
+    throw new Error("Apple Podcasts did not return metadata for this episode link.");
+  }
 
+  const pageMeta = await extractAppleEpisodePageMeta(input.sourceUrl);
   const feed = await fetchAppleFeed(show.feedUrl);
-  const targetTitle = await extractAppleEpisodeTitle(input.sourceUrl);
-  const episode = pickAppleEpisode(feed.items, targetTitle);
+  const episode = matchAppleEpisode(feed.items, targetEpisode, pageMeta);
 
   if (!episode?.audioUrl) {
-    throw new Error("Could not find a playable episode in the Apple Podcasts feed.");
+    throw new Error("Could not map this Apple Podcasts episode to a playable RSS item.");
   }
 
   const ext = inferAudioExtension(episode.audioUrl);
@@ -209,11 +219,20 @@ async function extractAppleAudio(input: {
   return {
     metadata: {
       title: episode.title,
-      showTitle: feed.showTitle || show.collectionName || "Apple Podcasts",
+      showTitle:
+        feed.showTitle || targetEpisode.collectionName || show.collectionName || "Apple Podcasts",
       durationSeconds:
-        episode.durationSeconds ??
-        (input.skipDurationProbe ? null : await getAudioDurationSeconds(workingAudioPath)),
-      coverUrl: episode.coverUrl ?? feed.coverUrl ?? show.artworkUrl600 ?? null,
+        targetEpisode.trackTimeMillis
+          ? Math.round(targetEpisode.trackTimeMillis / 1000)
+          : episode.durationSeconds ??
+            (input.skipDurationProbe ? null : await getAudioDurationSeconds(workingAudioPath)),
+      coverUrl:
+        episode.coverUrl ??
+        pageMeta.coverUrl ??
+        feed.coverUrl ??
+        targetEpisode.artworkUrl600 ??
+        show.artworkUrl600 ??
+        null,
       sourceUrl: input.sourceUrl,
       platform: "apple",
     },
@@ -234,7 +253,8 @@ async function downloadFile(url: string, destinationPath: string) {
 }
 
 async function getAudioDurationSeconds(filePath: string) {
-  const { stdout } = await execFileAsync("ffprobe", [
+  const ffprobePath = ensureExecutable(ffprobe.path);
+  const { stdout } = await execFileAsync(ffprobePath, [
     "-v",
     "error",
     "-show_entries",
@@ -243,7 +263,9 @@ async function getAudioDurationSeconds(filePath: string) {
     "default=noprint_wrappers=1:nokey=1",
     filePath,
   ]);
-  return Math.round(Number.parseFloat(stdout.trim()));
+
+  const duration = Math.round(Number.parseFloat(stdout.trim()));
+  return Number.isFinite(duration) ? duration : null;
 }
 
 function makeTempId() {
@@ -253,27 +275,28 @@ function makeTempId() {
 function findDownloadedFile(tempDir: string, id: string) {
   const match = fs
     .readdirSync(tempDir)
-    .find((file) => file.startsWith(id) && !file.endsWith(".part"));
+    .find((file) => file.startsWith(id) && !file.endsWith(".part") && !file.endsWith(".json"));
 
   if (!match) {
-    throw new Error("YouTube audio download completed without a readable output file.");
+    return null;
   }
 
   return path.join(tempDir, match);
 }
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "",
-  trimValues: true,
-  parseTagValue: false,
-});
-
 type AppleLookupResponse = {
   results?: Array<{
+    kind?: string;
+    wrapperType?: string;
+    trackId?: number;
+    collectionId?: number;
     collectionName?: string;
+    trackName?: string;
     feedUrl?: string;
     artworkUrl600?: string;
+    episodeUrl?: string;
+    releaseDate?: string;
+    trackTimeMillis?: number;
   }>;
 };
 
@@ -289,6 +312,12 @@ type AppleFeedItem = {
   durationSeconds: number | null;
   coverUrl: string | null;
   publishedAt: string | null;
+};
+
+type ApplePageMeta = {
+  title: string | null;
+  description: string | null;
+  coverUrl: string | null;
 };
 
 async function fetchAppleFeed(feedUrl: string): Promise<AppleFeed> {
@@ -316,7 +345,7 @@ async function fetchAppleFeed(feedUrl: string): Promise<AppleFeed> {
     showTitle: readText(channel?.title),
     coverUrl: readText(channel?.["itunes:image"]?.href) ?? readText(channel?.image?.url),
     items: rawItems.map((item) => ({
-      title: readText(item.title) ?? "Untitled episode",
+      title: decodeHtmlEntities(readText(item.title) ?? "Untitled episode"),
       audioUrl: readText(item.enclosure?.url),
       durationSeconds: parseDurationSeconds(readText(item["itunes:duration"])),
       coverUrl: readText(item["itunes:image"]?.href),
@@ -333,6 +362,116 @@ type AppleRawItem = {
   "itunes:image"?: { href?: string };
 };
 
+function extractAppleIds(sourceUrl: string) {
+  const collectionId = sourceUrl.match(/\/id(\d+)/i)?.[1] ?? null;
+  let episodeId: string | null = null;
+
+  try {
+    const url = new URL(sourceUrl);
+    episodeId = url.searchParams.get("i");
+  } catch {
+    episodeId = null;
+  }
+
+  return { collectionId, episodeId };
+}
+
+async function extractAppleEpisodePageMeta(sourceUrl: string): Promise<ApplePageMeta> {
+  try {
+    const response = await fetch(sourceUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
+      },
+    });
+
+    if (!response.ok) {
+      return { title: null, description: null, coverUrl: null };
+    }
+
+    const html = await response.text();
+    const title =
+      html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)?.[1] ??
+      html.match(/<title>([^<]+)<\/title>/i)?.[1] ??
+      null;
+    const description =
+      html.match(/<meta\s+property="og:description"\s+content="([^"]+)"/i)?.[1] ?? null;
+    const coverUrl =
+      html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i)?.[1] ?? null;
+
+    return {
+      title: title ? decodeHtmlEntities(title).trim() : null,
+      description: description ? decodeHtmlEntities(description).trim() : null,
+      coverUrl,
+    };
+  } catch {
+    return { title: null, description: null, coverUrl: null };
+  }
+}
+
+function matchAppleEpisode(
+  items: AppleFeedItem[],
+  targetEpisode: NonNullable<AppleLookupResponse["results"]>[number],
+  pageMeta: ApplePageMeta,
+) {
+  const playable = items.filter((item) => item.audioUrl);
+  if (playable.length === 0) {
+    return null;
+  }
+
+  const targetTitle = normalizeTitle(
+    pageMeta.title ?? targetEpisode.trackName ?? "",
+  );
+  const targetDate = targetEpisode.releaseDate
+    ? new Date(targetEpisode.releaseDate).getTime()
+    : null;
+
+  const scored = playable
+    .map((item) => {
+      let score = 0;
+      const itemTitle = normalizeTitle(item.title);
+
+      if (itemTitle === targetTitle) {
+        score += 100;
+      } else if (itemTitle.includes(targetTitle) || targetTitle.includes(itemTitle)) {
+        score += 40;
+      }
+
+      if (pageMeta.description) {
+        const desc = normalizeTitle(pageMeta.description).slice(0, 80);
+        if (desc && itemTitle.includes(desc.slice(0, 20))) {
+          score += 5;
+        }
+      }
+
+      if (targetDate && item.publishedAt) {
+        const publishedAt = new Date(item.publishedAt).getTime();
+        const dayDiff = Math.abs(publishedAt - targetDate) / 86400000;
+        if (dayDiff < 0.6) {
+          score += 30;
+        } else if (dayDiff < 2) {
+          score += 10;
+        }
+      }
+
+      if (targetEpisode.trackTimeMillis && item.durationSeconds) {
+        const durationDiff = Math.abs(
+          item.durationSeconds - Math.round(targetEpisode.trackTimeMillis / 1000),
+        );
+        if (durationDiff < 20) {
+          score += 20;
+        } else if (durationDiff < 120) {
+          score += 8;
+        }
+      }
+
+      return { item, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return scored[0]?.score > 0 ? scored[0].item : null;
+}
+
 type YoutubeMetadata = {
   title: string | null;
   showTitle: string | null;
@@ -347,153 +486,6 @@ type YoutubeCaptionNode = {
   "#text"?: string;
 };
 
-function pickAppleEpisode(items: AppleFeedItem[], targetTitle: string | null) {
-  const playable = items.filter((item) => item.audioUrl);
-  if (playable.length === 0) {
-    return null;
-  }
-
-  if (targetTitle) {
-    const normalizedTarget = normalizeTitle(targetTitle);
-    const exact = playable.find(
-      (item) => normalizeTitle(item.title) === normalizedTarget,
-    );
-    if (exact) {
-      return exact;
-    }
-
-    const partial = playable.find((item) =>
-      normalizeTitle(item.title).includes(normalizedTarget),
-    );
-    if (partial) {
-      return partial;
-    }
-  }
-
-  const shortEpisode =
-    playable.find(
-      (item) =>
-        item.durationSeconds !== null && item.durationSeconds > 0 && item.durationSeconds <= 12 * 60,
-    ) ??
-    playable.find(
-      (item) =>
-        item.durationSeconds !== null && item.durationSeconds > 0 && item.durationSeconds <= 20 * 60,
-    );
-
-  return shortEpisode ?? playable[0];
-}
-
-function extractAppleCollectionId(sourceUrl: string) {
-  const match = sourceUrl.match(/\/id(\d+)/i);
-  return match?.[1] ?? null;
-}
-
-async function extractAppleEpisodeTitle(sourceUrl: string) {
-  const url = new URL(sourceUrl);
-  if (!url.searchParams.get("i")) {
-    return null;
-  }
-
-  try {
-    const response = await fetch(sourceUrl, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
-      },
-    });
-
-    if (!response.ok) {
-      return null;
-    }
-
-    const html = await response.text();
-    const ogTitle =
-      html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)?.[1] ??
-      html.match(/<title>([^<]+)<\/title>/i)?.[1];
-
-    return ogTitle ? decodeHtmlEntities(ogTitle).trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-function inferAudioExtension(url: string) {
-  const pathname = new URL(url).pathname.toLowerCase();
-  if (pathname.endsWith(".m4a")) {
-    return "m4a";
-  }
-  if (pathname.endsWith(".wav")) {
-    return "wav";
-  }
-  if (pathname.endsWith(".webm")) {
-    return "webm";
-  }
-  return "mp3";
-}
-
-function parseDurationSeconds(value: string | null) {
-  if (!value) {
-    return null;
-  }
-
-  if (/^\d+$/.test(value)) {
-    return Number.parseInt(value, 10);
-  }
-
-  const parts = value.split(":").map((part) => Number.parseInt(part, 10));
-  if (parts.some((part) => Number.isNaN(part))) {
-    return null;
-  }
-
-  if (parts.length === 2) {
-    return parts[0] * 60 + parts[1];
-  }
-
-  if (parts.length === 3) {
-    return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  }
-
-  return null;
-}
-
-function normalizeTitle(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/&amp;/g, "&")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-function decodeHtmlEntities(value: string) {
-  return value
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
-}
-
-function readText(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function toArray<T>(value: T | T[] | undefined): T[] {
-  if (!value) {
-    return [];
-  }
-
-  return Array.isArray(value) ? value : [value];
-}
-
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Request failed for ${url}`);
-  }
-
-  return (await response.json()) as T;
-}
-
 async function extractYoutubeTranscript(sourceUrl: string) {
   try {
     const videoId = extractYoutubeVideoId(sourceUrl);
@@ -503,9 +495,9 @@ async function extractYoutubeTranscript(sourceUrl: string) {
 
     const yt = await Innertube.create();
     const info = await yt.getInfo(videoId);
-    const englishTrack = info.captions?.caption_tracks?.find(
-      (track) => track.language_code === "en",
-    );
+    const englishTrack =
+      info.captions?.caption_tracks?.find((track) => track.language_code === "en") ??
+      info.captions?.caption_tracks?.find((track) => track.language_code?.startsWith("en"));
 
     if (!englishTrack?.base_url) {
       return [];
@@ -561,27 +553,68 @@ async function getYoutubeMetadata(sourceUrl: string): Promise<YoutubeMetadata> {
   }
 }
 
-async function getYoutubeMetadataViaYtDlp(
-  sourceUrl: string,
-): Promise<YoutubeMetadata> {
-  const info = (await youtubedl(sourceUrl, {
-    dumpSingleJson: true,
-    noWarnings: true,
-    noCheckCertificates: true,
-    skipDownload: true,
-  })) as {
-    title?: string;
-    channel?: string;
-    thumbnail?: string;
-    duration?: number;
-  };
+async function tryDownloadYoutubeAudio(id: string, sourceUrl: string, tempDir: string) {
+  try {
+    const binaryPath = await ensureYtDlpBinary();
+    const ytDlp = new YTDlpWrap(binaryPath);
+    const outputTemplate = path.join(tempDir, `${id}.%(ext)s`);
 
-  return {
-    title: info.title ?? null,
-    showTitle: info.channel ?? null,
-    durationSeconds: info.duration ?? null,
-    coverUrl: info.thumbnail ?? null,
-  };
+    await ytDlp.execPromise([
+      "--no-warnings",
+      "--no-playlist",
+      "-f",
+      "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio",
+      "-o",
+      outputTemplate,
+      sourceUrl,
+    ]);
+
+    const downloaded = findDownloadedFile(tempDir, id);
+    if (!downloaded) {
+      return null;
+    }
+
+    const normalizedPath = path.join(tempDir, `${id}-source.mp3`);
+    await normalizeAudio(downloaded, normalizedPath);
+    return normalizedPath;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureYtDlpBinary() {
+  const binaryPath = path.join(ytDlpCacheDir, process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp");
+  if (fs.existsSync(binaryPath)) {
+    return binaryPath;
+  }
+
+  fs.mkdirSync(ytDlpCacheDir, { recursive: true });
+  await YTDlpWrap.downloadFromGithub(binaryPath);
+  return binaryPath;
+}
+
+async function normalizeAudio(inputPath: string, outputPath: string) {
+  const ffmpegBinary = ffmpegPath ? ensureExecutable(ffmpegPath) : null;
+  if (!ffmpegBinary) {
+    fs.copyFileSync(inputPath, outputPath);
+    return;
+  }
+
+  await execFileAsync(ffmpegBinary, [
+    "-i",
+    inputPath,
+    "-vn",
+    "-ac",
+    "1",
+    "-ar",
+    "32000",
+    "-c:a",
+    "libmp3lame",
+    "-b:a",
+    "128k",
+    outputPath,
+    "-y",
+  ]);
 }
 
 function mapYoutubeCaptionNode(node: YoutubeCaptionNode): TranscriptSegment | null {
@@ -624,7 +657,7 @@ function mergeTranscriptSegments(segments: TranscriptSegment[]) {
     merged.push({ ...segment });
   }
 
-  return merged.slice(0, 24);
+  return merged.slice(0, 30);
 }
 
 function extractYoutubeVideoId(sourceUrl: string) {
@@ -649,7 +682,92 @@ function emptyYoutubeMetadata(): YoutubeMetadata {
   };
 }
 
-function canUseYtDlpFallback() {
-  const result = spawnSync("python3", ["--version"], { stdio: "ignore" });
-  return result.status === 0;
+function inferAudioExtension(url: string) {
+  const pathname = new URL(url).pathname.toLowerCase();
+  if (pathname.endsWith(".m4a")) {
+    return "m4a";
+  }
+  if (pathname.endsWith(".wav")) {
+    return "wav";
+  }
+  if (pathname.endsWith(".webm")) {
+    return "webm";
+  }
+  return "mp3";
+}
+
+function parseDurationSeconds(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  if (/^\d+$/.test(value)) {
+    return Number.parseInt(value, 10);
+  }
+
+  const parts = value.split(":").map((part) => Number.parseInt(part, 10));
+  if (parts.some((part) => Number.isNaN(part))) {
+    return null;
+  }
+
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+
+  return null;
+}
+
+function normalizeTitle(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/&amp;/g, "&")
+    .replace(/[–—]/g, "-")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function decodeHtmlEntities(value: string) {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#8211;/g, "-")
+    .replace(/&#8212;/g, "-")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function readText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function toArray<T>(value: T | T[] | undefined): T[] {
+  if (!value) {
+    return [];
+  }
+
+  return Array.isArray(value) ? value : [value];
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Request failed for ${url}`);
+  }
+
+  return (await response.json()) as T;
+}
+
+function ensureExecutable(binaryPath: string) {
+  try {
+    fs.chmodSync(binaryPath, 0o755);
+  } catch {
+    // Best effort only.
+  }
+
+  return binaryPath;
 }

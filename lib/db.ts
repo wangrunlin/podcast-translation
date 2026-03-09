@@ -25,6 +25,7 @@ if (!globalForDb.__podcastTranslationDb) {
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
       source_url TEXT NOT NULL,
+      source_fingerprint TEXT NOT NULL DEFAULT '',
       source_type TEXT NOT NULL,
       platform TEXT NOT NULL,
       target_language TEXT NOT NULL,
@@ -38,6 +39,8 @@ if (!globalForDb.__podcastTranslationDb) {
       error_message TEXT,
       audio_original_path TEXT,
       audio_translated_path TEXT,
+      clone_voice_id TEXT,
+      clone_status TEXT,
       transcript_original_json TEXT NOT NULL DEFAULT '[]',
       transcript_translated_json TEXT NOT NULL DEFAULT '[]',
       transcript_bilingual_json TEXT NOT NULL DEFAULT '[]',
@@ -54,6 +57,15 @@ if (!globalForDb.__podcastTranslationDb) {
       payload_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL
     );
+  `);
+  ensureColumn("jobs", "source_fingerprint", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("jobs", "clone_voice_id", "TEXT");
+  ensureColumn("jobs", "clone_status", "TEXT");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_jobs_source_fingerprint
+    ON jobs(source_fingerprint);
+    CREATE INDEX IF NOT EXISTS idx_jobs_status_updated_at
+    ON jobs(status, updated_at DESC);
   `);
 
   globalForDb.__podcastTranslationDb = db;
@@ -82,4 +94,16 @@ function resolveDbConfig() {
     dbPath: ":memory:",
     inMemory: true,
   };
+}
+
+function ensureColumn(table: string, column: string, definition: string) {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+  }>;
+
+  if (rows.some((row) => row.name === column)) {
+    return;
+  }
+
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }

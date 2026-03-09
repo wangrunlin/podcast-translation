@@ -30,9 +30,9 @@ export default function Home() {
             </div>
             <div className="mt-10 grid gap-4 sm:grid-cols-3">
               {[
-                "Apple episodes, YouTube videos with English captions, and direct audio URLs are supported.",
-                "Homepage now prioritizes instant playback with browser-side caching.",
-                "OpenRouter handles transcript + translation, MiniMax handles Chinese TTS.",
+                "Apple single-episode links, YouTube single-video links, and direct audio URLs are supported.",
+                "Repeated links reuse the latest successful result instead of reprocessing from zero.",
+                "OpenRouter handles transcript + translation, MiniMax handles cloned Chinese speech when available.",
               ].map((item) => (
                 <div
                   key={item}
@@ -47,10 +47,10 @@ export default function Home() {
                 href="/demo"
                 className="rounded-full bg-[var(--foreground)] px-5 py-3 text-sm font-semibold text-white transition hover:opacity-90"
               >
-                Open instant demo
+                Open debug lab
               </Link>
               <p className="self-center text-sm text-[var(--muted)]">
-                The main path now runs directly on the homepage. The demo page remains for isolated debugging.
+                The homepage is now the primary product flow. The demo page remains for provider debugging only.
               </p>
             </div>
           </div>
@@ -60,8 +60,8 @@ export default function Home() {
               <p className="eyebrow text-xs font-semibold">New Job</p>
               <h2 className="mt-3 text-2xl font-semibold">Start a translation</h2>
               <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                Hard limits for this demo: English to Chinese only, one clip at
-                a time, and a sync processing cap of 8 minutes.
+                Hard limits for this MVP: English to Chinese only, single
+                episode links only, and a 30 minute processing cap per job.
               </p>
             </div>
             <CreateJobForm />
@@ -77,9 +77,9 @@ export default function Home() {
                   Supported inputs
                 </p>
                 <p className="mt-2">
-                  Apple Podcasts episode links and YouTube videos with English
-                  captions are supported. Direct audio links ending in mp3, m4a,
-                  wav, or ogg are also supported as a deterministic fallback.
+                  Apple Podcasts episode links are matched to the exact episode.
+                  YouTube single videos and direct audio links are supported as
+                  secondary inputs.
                 </p>
               </div>
               <div className="rounded-3xl bg-white/60 p-4">
@@ -87,9 +87,9 @@ export default function Home() {
                   Processing stages
                 </p>
                 <p className="mt-2">
-                  Resolve source metadata, extract transcript, translate, and
-                  synthesize Chinese playback. Repeated links are cached in the
-                  browser for much faster replay.
+                  Resolve source metadata, extract the original speech, build a
+                  transcript, translate it, and synthesize Chinese playback.
+                  Cached results open much faster on repeat runs.
                 </p>
               </div>
             </div>

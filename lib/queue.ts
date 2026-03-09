@@ -17,11 +17,11 @@ export function enqueueJob(jobId: string) {
 
   queue.add(jobId);
 
-  setTimeout(async () => {
+  void (async () => {
     try {
       await processJob(jobId);
     } finally {
       queue.delete(jobId);
     }
-  }, 50);
+  })();
 }
