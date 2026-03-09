@@ -13,7 +13,7 @@ A local-first demo for the PRD in `jarvis-memory`.
 - `Next.js 16`
 - `SQLite` via `better-sqlite3`
 - `OpenRouter` for ASR + translation
-- `MiniMax` for Chinese TTS
+- `MiniMax Speech 2.8 HD` for Chinese TTS
 - mock fallbacks when API keys are missing
 
 ## Run locally
@@ -56,5 +56,10 @@ If `yt-dlp` is missing, the app still works with direct audio URLs.
 - `MINIMAX_GROUP_ID`
 - `MINIMAX_BASE_URL`
 - `MINIMAX_TTS_MODEL`
+
+Recommended MiniMax base URLs:
+
+- international: `https://api.minimax.io`
+- mainland China: `https://api.minimaxi.com`
 
 Without these keys, the app falls back to mock transcript and mock audio generation so the full UI and async job flow remain testable.

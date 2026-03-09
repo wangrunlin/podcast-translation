@@ -19,7 +19,7 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
       Authorization: `Bearer ${env.openRouterApiKey}`,
       "Content-Type": "application/json",
       "HTTP-Referer": "http://localhost:3000",
-      "X-Title": "Podcast Translation Demo",
+      "X-OpenRouter-Title": "Podcast Translation Demo",
     },
     body: JSON.stringify({
       model: env.openRouterAsrModel,
@@ -51,7 +51,8 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
   });
 
   if (!response.ok) {
-    throw new Error("OpenRouter transcription failed.");
+    const detail = await response.text();
+    throw new Error(`OpenRouter transcription failed: ${detail}`);
   }
 
   const data = (await response.json()) as {
@@ -86,7 +87,7 @@ export async function translateSegments(
       Authorization: `Bearer ${env.openRouterApiKey}`,
       "Content-Type": "application/json",
       "HTTP-Referer": "http://localhost:3000",
-      "X-Title": "Podcast Translation Demo",
+      "X-OpenRouter-Title": "Podcast Translation Demo",
     },
     body: JSON.stringify({
       model: env.openRouterTranslationModel,
@@ -106,7 +107,8 @@ export async function translateSegments(
   });
 
   if (!response.ok) {
-    throw new Error("OpenRouter translation failed.");
+    const detail = await response.text();
+    throw new Error(`OpenRouter translation failed: ${detail}`);
   }
 
   const data = (await response.json()) as {

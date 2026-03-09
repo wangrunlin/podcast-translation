@@ -9,8 +9,8 @@ export const env = {
     "google/gemini-3.1-flash-lite-preview",
   miniMaxApiKey: process.env.MINIMAX_API_KEY ?? "",
   miniMaxGroupId: process.env.MINIMAX_GROUP_ID ?? "",
-  miniMaxBaseUrl: process.env.MINIMAX_BASE_URL ?? "https://api.minimax.chat",
-  miniMaxTtsModel: process.env.MINIMAX_TTS_MODEL ?? "speech-02-hd",
+  miniMaxBaseUrl: process.env.MINIMAX_BASE_URL ?? "https://api.minimax.io",
+  miniMaxTtsModel: process.env.MINIMAX_TTS_MODEL ?? "speech-2.8-hd",
 };
 
 export function hasOpenRouter() {
