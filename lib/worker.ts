@@ -48,7 +48,21 @@ export async function processJob(jobId: string) {
     }
 
     setJobStage(job.id, "transcribing");
-    const originalSegments = await transcribeAudio(extracted.workingAudioPath);
+    const originalSegments =
+      extracted.transcriptOriginal ??
+      (extracted.workingAudioPath
+        ? await transcribeAudio(extracted.workingAudioPath)
+        : []);
+
+    if (originalSegments.length === 0) {
+      failJob(
+        job.id,
+        "transcript_unavailable",
+        "Unable to extract transcript data from this source. For YouTube, use a video with English captions.",
+      );
+      return;
+    }
+
     updateJob(job.id, { transcriptOriginal: originalSegments });
 
     setJobStage(job.id, "translating");

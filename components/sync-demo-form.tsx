@@ -13,8 +13,8 @@ const SAMPLE_LINKS = [
     url: "https://podcasts.apple.com/us/podcast/60-second-mind/id262750202?uo=4",
   },
   {
-    label: "YouTube / VOA sample",
-    url: "https://www.youtube.com/watch?v=oeIUhjCyNDM",
+    label: "YouTube / TED-Ed",
+    url: "https://www.youtube.com/watch?v=sbCvQbBi2G8",
   },
 ] as const;
 

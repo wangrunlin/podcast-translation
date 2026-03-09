@@ -2,17 +2,24 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { XMLParser } from "fast-xml-parser";
+import { Innertube } from "youtubei.js";
 import youtubedl from "youtube-dl-exec";
-import type { EpisodeMetadata, JobRecord, SourcePlatform } from "@/lib/types";
+import type {
+  EpisodeMetadata,
+  JobRecord,
+  SourcePlatform,
+  TranscriptSegment,
+} from "@/lib/types";
 
 const execFileAsync = promisify(execFile);
 
 export type ExtractResult = {
   metadata: EpisodeMetadata;
-  workingAudioPath: string;
+  workingAudioPath: string | null;
   originalAudioPublicPath: string | null;
+  transcriptOriginal: TranscriptSegment[] | null;
 };
 
 export async function extractEpisode(job: JobRecord): Promise<ExtractResult> {
@@ -100,6 +107,7 @@ async function extractDirectAudio(input: {
     },
     workingAudioPath,
     originalAudioPublicPath: input.publicOriginalUrl,
+    transcriptOriginal: null,
   };
 }
 
@@ -109,19 +117,34 @@ async function extractYoutubeAudio(input: {
   tempDir: string;
   skipDurationProbe: boolean;
 }): Promise<ExtractResult> {
+  const transcriptOriginal = await extractYoutubeTranscript(input.sourceUrl);
+  const metadata = await getYoutubeMetadata(input.sourceUrl);
+
+  if (transcriptOriginal.length > 0) {
+    return {
+      metadata: {
+        title: metadata.title ?? "YouTube episode",
+        showTitle: metadata.showTitle ?? "YouTube",
+        durationSeconds: metadata.durationSeconds,
+        coverUrl: metadata.coverUrl,
+        sourceUrl: input.sourceUrl,
+        platform: "youtube",
+      },
+      workingAudioPath: null,
+      originalAudioPublicPath: null,
+      transcriptOriginal,
+    };
+  }
+
+  if (!canUseYtDlpFallback()) {
+    throw new Error(
+      "This YouTube video could not expose a usable English transcript in the current runtime. Try another YouTube video with captions, or use Apple Podcasts / direct audio instead.",
+    );
+  }
+
   const outputTemplate = path.join(input.tempDir, `${input.id}.%(ext)s`);
 
-  const info = (await youtubedl(input.sourceUrl, {
-    dumpSingleJson: true,
-    noWarnings: true,
-    noCheckCertificates: true,
-    skipDownload: true,
-  })) as {
-    title?: string;
-    channel?: string;
-    thumbnail?: string;
-    duration?: number;
-  };
+  const info = await getYoutubeMetadataViaYtDlp(input.sourceUrl);
 
   await youtubedl(input.sourceUrl, {
     format: "bestaudio/best",
@@ -135,18 +158,19 @@ async function extractYoutubeAudio(input: {
   return {
     metadata: {
       title: info.title ?? "YouTube episode",
-      showTitle: info.channel ?? "YouTube",
+      showTitle: info.showTitle ?? "YouTube",
       durationSeconds:
-        info.duration ??
+        info.durationSeconds ??
         (input.skipDurationProbe
           ? null
           : await getAudioDurationSeconds(workingAudioPath)),
-      coverUrl: info.thumbnail ?? null,
+      coverUrl: info.coverUrl ?? null,
       sourceUrl: input.sourceUrl,
       platform: "youtube",
     },
     workingAudioPath,
     originalAudioPublicPath: null,
+    transcriptOriginal: null,
   };
 }
 
@@ -195,6 +219,7 @@ async function extractAppleAudio(input: {
     },
     workingAudioPath,
     originalAudioPublicPath: episode.audioUrl,
+    transcriptOriginal: null,
   };
 }
 
@@ -306,6 +331,20 @@ type AppleRawItem = {
   enclosure?: { url?: string };
   "itunes:duration"?: string;
   "itunes:image"?: { href?: string };
+};
+
+type YoutubeMetadata = {
+  title: string | null;
+  showTitle: string | null;
+  durationSeconds: number | null;
+  coverUrl: string | null;
+};
+
+type YoutubeCaptionNode = {
+  t?: string | number;
+  d?: string | number;
+  s?: Array<{ "#text"?: string }> | { "#text"?: string };
+  "#text"?: string;
 };
 
 function pickAppleEpisode(items: AppleFeedItem[], targetTitle: string | null) {
@@ -453,4 +492,164 @@ async function fetchJson<T>(url: string): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+async function extractYoutubeTranscript(sourceUrl: string) {
+  try {
+    const videoId = extractYoutubeVideoId(sourceUrl);
+    if (!videoId) {
+      return [];
+    }
+
+    const yt = await Innertube.create();
+    const info = await yt.getInfo(videoId);
+    const englishTrack = info.captions?.caption_tracks?.find(
+      (track) => track.language_code === "en",
+    );
+
+    if (!englishTrack?.base_url) {
+      return [];
+    }
+
+    const trackUrl = new URL(englishTrack.base_url);
+    trackUrl.searchParams.set("fmt", "srv3");
+    const response = await fetch(trackUrl.toString());
+    if (!response.ok) {
+      return [];
+    }
+
+    const xml = await response.text();
+    const parsed = xmlParser.parse(xml) as {
+      timedtext?: {
+        body?: {
+          p?: YoutubeCaptionNode | YoutubeCaptionNode[];
+        };
+      };
+    };
+
+    const segments = toArray(parsed.timedtext?.body?.p)
+      .map(mapYoutubeCaptionNode)
+      .filter((segment): segment is TranscriptSegment => Boolean(segment));
+
+    return mergeTranscriptSegments(segments);
+  } catch {
+    return [];
+  }
+}
+
+async function getYoutubeMetadata(sourceUrl: string): Promise<YoutubeMetadata> {
+  try {
+    const videoId = extractYoutubeVideoId(sourceUrl);
+    if (!videoId) {
+      return emptyYoutubeMetadata();
+    }
+
+    const yt = await Innertube.create();
+    const info = await yt.getInfo(videoId);
+
+    return {
+      title: readText(info.basic_info?.title),
+      showTitle: readText(info.basic_info?.channel?.name),
+      durationSeconds:
+        typeof info.basic_info?.duration === "number"
+          ? info.basic_info.duration
+          : null,
+      coverUrl: readText(info.basic_info?.thumbnail?.[0]?.url),
+    };
+  } catch {
+    return emptyYoutubeMetadata();
+  }
+}
+
+async function getYoutubeMetadataViaYtDlp(
+  sourceUrl: string,
+): Promise<YoutubeMetadata> {
+  const info = (await youtubedl(sourceUrl, {
+    dumpSingleJson: true,
+    noWarnings: true,
+    noCheckCertificates: true,
+    skipDownload: true,
+  })) as {
+    title?: string;
+    channel?: string;
+    thumbnail?: string;
+    duration?: number;
+  };
+
+  return {
+    title: info.title ?? null,
+    showTitle: info.channel ?? null,
+    durationSeconds: info.duration ?? null,
+    coverUrl: info.thumbnail ?? null,
+  };
+}
+
+function mapYoutubeCaptionNode(node: YoutubeCaptionNode): TranscriptSegment | null {
+  const startMs = Number(node.t ?? 0);
+  const durationMs = Number(node.d ?? 0);
+  const fragments = toArray(node.s)
+    .map((part) => readText(part?.["#text"]))
+    .filter(Boolean);
+  const sourceText = decodeHtmlEntities(
+    fragments.join("") || readText(node["#text"]) || "",
+  );
+
+  if (!sourceText.trim()) {
+    return null;
+  }
+
+  return {
+    startMs,
+    endMs: startMs + durationMs,
+    sourceText,
+  };
+}
+
+function mergeTranscriptSegments(segments: TranscriptSegment[]) {
+  const merged: TranscriptSegment[] = [];
+
+  for (const segment of segments) {
+    const previous = merged[merged.length - 1];
+    if (
+      previous &&
+      previous.sourceText.length < 120 &&
+      segment.sourceText.length < 120 &&
+      segment.startMs - previous.endMs < 800
+    ) {
+      previous.endMs = segment.endMs;
+      previous.sourceText = `${previous.sourceText} ${segment.sourceText}`.trim();
+      continue;
+    }
+
+    merged.push({ ...segment });
+  }
+
+  return merged.slice(0, 24);
+}
+
+function extractYoutubeVideoId(sourceUrl: string) {
+  try {
+    const url = new URL(sourceUrl);
+    if (url.hostname.includes("youtu.be")) {
+      return url.pathname.slice(1) || null;
+    }
+
+    return url.searchParams.get("v");
+  } catch {
+    return null;
+  }
+}
+
+function emptyYoutubeMetadata(): YoutubeMetadata {
+  return {
+    title: null,
+    showTitle: null,
+    durationSeconds: null,
+    coverUrl: null,
+  };
+}
+
+function canUseYtDlpFallback() {
+  const result = spawnSync("python3", ["--version"], { stdio: "ignore" });
+  return result.status === 0;
 }

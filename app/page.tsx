@@ -30,9 +30,9 @@ export default function Home() {
             </div>
             <div className="mt-10 grid gap-4 sm:grid-cols-3">
               {[
-                "Apple Podcasts and YouTube are supported, with direct audio URL fallback.",
-                "Async pipeline with stable result pages and session history.",
-                "OpenRouter for ASR + translation, MiniMax for Chinese TTS.",
+                "Apple episodes, YouTube videos with English captions, and direct audio URLs are supported.",
+                "Homepage now prioritizes instant playback with browser-side caching.",
+                "OpenRouter handles transcript + translation, MiniMax handles Chinese TTS.",
               ].map((item) => (
                 <div
                   key={item}
@@ -50,7 +50,7 @@ export default function Home() {
                 Open instant demo
               </Link>
               <p className="self-center text-sm text-[var(--muted)]">
-                On Vercel, use the instant demo page for Apple Podcasts and quick playback.
+                The main path now runs directly on the homepage. The demo page remains for isolated debugging.
               </p>
             </div>
           </div>
@@ -60,8 +60,8 @@ export default function Home() {
               <p className="eyebrow text-xs font-semibold">New Job</p>
               <h2 className="mt-3 text-2xl font-semibold">Start a translation</h2>
               <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                Hard limits for this demo: English to Chinese only, one episode
-                per job, and a duration cap of 20 minutes.
+                Hard limits for this demo: English to Chinese only, one clip at
+                a time, and a sync processing cap of 8 minutes.
               </p>
             </div>
             <CreateJobForm />
@@ -77,9 +77,9 @@ export default function Home() {
                   Supported inputs
                 </p>
                 <p className="mt-2">
-                  Apple Podcasts show links and YouTube podcast/video URLs are
-                  supported. Direct audio links ending in mp3, m4a, wav, or ogg
-                  are also supported as a deterministic fallback.
+                  Apple Podcasts episode links and YouTube videos with English
+                  captions are supported. Direct audio links ending in mp3, m4a,
+                  wav, or ogg are also supported as a deterministic fallback.
                 </p>
               </div>
               <div className="rounded-3xl bg-white/60 p-4">
@@ -87,9 +87,9 @@ export default function Home() {
                   Processing stages
                 </p>
                 <p className="mt-2">
-                  Extract audio, transcribe, translate, synthesize, and package.
-                  Missing API keys automatically switch to mock generation so
-                  the app still runs end-to-end.
+                  Resolve source metadata, extract transcript, translate, and
+                  synthesize Chinese playback. Repeated links are cached in the
+                  browser for much faster replay.
                 </p>
               </div>
             </div>

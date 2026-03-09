@@ -54,7 +54,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const originalSegments = await transcribeAudio(extracted.workingAudioPath);
+    const originalSegments =
+      extracted.transcriptOriginal ??
+      (extracted.workingAudioPath
+        ? await transcribeAudio(extracted.workingAudioPath)
+        : []);
+
+    if (originalSegments.length === 0) {
+      throw new Error(
+        "Unable to extract transcript data from this source. Try another Apple episode, a YouTube video with English captions, or a direct audio URL.",
+      );
+    }
     const translatedSegments = await translateSegments(originalSegments);
     const audioBase64 = await synthesizeChineseAudioBase64(translatedSegments);
 
@@ -108,6 +118,7 @@ async function extractFromBase64(input: {
     },
     workingAudioPath,
     originalAudioPublicPath: null,
+    transcriptOriginal: null,
   };
 }
 
