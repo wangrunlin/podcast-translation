@@ -62,8 +62,7 @@ export async function POST(request: NextRequest) {
       audioDataUrl: `data:audio/mp3;base64,${audioBase64}`,
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Sync demo failed unexpectedly.";
+    const message = formatUnknownError(error);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
@@ -80,4 +79,20 @@ function detectPlatform(sourceUrl: string) {
   }
 
   return "unknown" as const;
+}
+
+function formatUnknownError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message || error.toString();
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Sync demo failed unexpectedly.";
+  }
 }

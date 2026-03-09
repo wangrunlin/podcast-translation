@@ -92,7 +92,7 @@ async function extractYoutubeAudio(input: {
   sourceUrl: string;
   tempDir: string;
 }): Promise<ExtractResult> {
-  const outputPath = path.join(input.tempDir, `${input.id}.mp3`);
+  const outputTemplate = path.join(input.tempDir, `${input.id}.%(ext)s`);
 
   const info = (await youtubedl(input.sourceUrl, {
     dumpSingleJson: true,
@@ -107,24 +107,25 @@ async function extractYoutubeAudio(input: {
   };
 
   await youtubedl(input.sourceUrl, {
-    extractAudio: true,
-    audioFormat: "mp3",
-    audioQuality: 0,
-    output: outputPath,
+    format: "bestaudio/best",
+    output: outputTemplate,
     noWarnings: true,
     noCheckCertificates: true,
   });
+
+  const workingAudioPath = findDownloadedFile(input.tempDir, input.id);
 
   return {
     metadata: {
       title: info.title ?? "YouTube episode",
       showTitle: info.channel ?? "YouTube",
-      durationSeconds: info.duration ?? (await getAudioDurationSeconds(outputPath)),
+      durationSeconds:
+        info.duration ?? (await getAudioDurationSeconds(workingAudioPath)),
       coverUrl: info.thumbnail ?? null,
       sourceUrl: input.sourceUrl,
       platform: "youtube",
     },
-    workingAudioPath: outputPath,
+    workingAudioPath,
     originalAudioPublicPath: null,
   };
 }
@@ -154,4 +155,16 @@ async function getAudioDurationSeconds(filePath: string) {
 
 function makeTempId() {
   return `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function findDownloadedFile(tempDir: string, id: string) {
+  const match = fs
+    .readdirSync(tempDir)
+    .find((file) => file.startsWith(id) && !file.endsWith(".part"));
+
+  if (!match) {
+    throw new Error("YouTube audio download completed without a readable output file.");
+  }
+
+  return path.join(tempDir, match);
 }

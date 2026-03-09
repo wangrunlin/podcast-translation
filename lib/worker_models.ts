@@ -13,6 +13,7 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
   }
 
   const base64Audio = fs.readFileSync(audioPath).toString("base64");
+  const format = detectAudioFormat(audioPath);
   const response = await fetch(`${env.openRouterBaseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -41,7 +42,7 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
               type: "input_audio",
               input_audio: {
                 data: base64Audio,
-                format: "mp3",
+                format,
               },
             },
           ],
@@ -252,4 +253,17 @@ async function createMockAudioBase64(text: string) {
   const audio = fs.readFileSync(outputPath).toString("base64");
   fs.unlinkSync(outputPath);
   return audio;
+}
+
+function detectAudioFormat(audioPath: string) {
+  const ext = path.extname(audioPath).toLowerCase().replace(".", "");
+  if (ext === "m4a") {
+    return "mp4";
+  }
+
+  if (ext === "webm" || ext === "mp4" || ext === "wav" || ext === "mp3" || ext === "mpeg") {
+    return ext;
+  }
+
+  return "mp3";
 }
