@@ -161,8 +161,10 @@ export async function synthesizeChineseAudioBase64(
       model: env.miniMaxTtsModel,
       text,
       stream: false,
+      language_boost: "Chinese",
+      output_format: "hex",
       voice_setting: {
-        voice_id: "Chinese (Mandarin)_Gentle_Female",
+        voice_id: "Chinese (Mandarin)_Warm_Girl",
         speed: 1,
         vol: 1,
         pitch: 0,
@@ -171,6 +173,7 @@ export async function synthesizeChineseAudioBase64(
         sample_rate: 32000,
         bitrate: 128000,
         format: "mp3",
+        channel: 1,
       },
     }),
   });
@@ -181,14 +184,19 @@ export async function synthesizeChineseAudioBase64(
   }
 
   const data = (await response.json()) as {
-    data?: { audio?: string };
+    data?: { audio?: string | null };
+    base_resp?: { status_code?: number; status_msg?: string };
   };
-  const audio = data.data?.audio;
-  if (!audio) {
-    throw new Error("MiniMax did not return audio data.");
+  const audioHex = data.data?.audio;
+  if (!audioHex) {
+    const statusCode = data.base_resp?.status_code ?? null;
+    const statusMsg = data.base_resp?.status_msg ?? "Unknown MiniMax error";
+    throw new Error(
+      `MiniMax did not return audio data. status_code=${statusCode} status_msg=${statusMsg}`,
+    );
   }
 
-  return audio;
+  return Buffer.from(audioHex, "hex").toString("base64");
 }
 
 function createMockTranscript(): TranscriptSegment[] {

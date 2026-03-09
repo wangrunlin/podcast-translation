@@ -33,6 +33,7 @@ export async function extractSourceToTemp(input: {
   id?: string;
   tempDir?: string;
   publicOriginalUrl?: string | null;
+  skipDurationProbe?: boolean;
 }): Promise<ExtractResult> {
   const tempDir =
     input.tempDir ??
@@ -47,6 +48,7 @@ export async function extractSourceToTemp(input: {
       sourceUrl: input.sourceUrl,
       tempDir,
       publicOriginalUrl: input.publicOriginalUrl ?? input.sourceUrl,
+      skipDurationProbe: input.skipDurationProbe ?? false,
     });
   }
 
@@ -55,6 +57,7 @@ export async function extractSourceToTemp(input: {
       id,
       sourceUrl: input.sourceUrl,
       tempDir,
+      skipDurationProbe: input.skipDurationProbe ?? false,
     });
   }
 
@@ -68,6 +71,7 @@ async function extractDirectAudio(input: {
   sourceUrl: string;
   tempDir: string;
   publicOriginalUrl: string | null;
+  skipDurationProbe: boolean;
 }): Promise<ExtractResult> {
   const filename = `${input.id}-source.mp3`;
   const workingAudioPath = path.join(input.tempDir, filename);
@@ -77,7 +81,9 @@ async function extractDirectAudio(input: {
     metadata: {
       title: "Direct audio episode",
       showTitle: "Imported audio",
-      durationSeconds: await getAudioDurationSeconds(workingAudioPath),
+      durationSeconds: input.skipDurationProbe
+        ? null
+        : await getAudioDurationSeconds(workingAudioPath),
       coverUrl: null,
       sourceUrl: input.sourceUrl,
       platform: "direct",
@@ -91,6 +97,7 @@ async function extractYoutubeAudio(input: {
   id: string;
   sourceUrl: string;
   tempDir: string;
+  skipDurationProbe: boolean;
 }): Promise<ExtractResult> {
   const outputTemplate = path.join(input.tempDir, `${input.id}.%(ext)s`);
 
@@ -120,7 +127,10 @@ async function extractYoutubeAudio(input: {
       title: info.title ?? "YouTube episode",
       showTitle: info.channel ?? "YouTube",
       durationSeconds:
-        info.duration ?? (await getAudioDurationSeconds(workingAudioPath)),
+        info.duration ??
+        (input.skipDurationProbe
+          ? null
+          : await getAudioDurationSeconds(workingAudioPath)),
       coverUrl: info.thumbnail ?? null,
       sourceUrl: input.sourceUrl,
       platform: "youtube",
