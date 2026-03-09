@@ -13,8 +13,9 @@ export default function DemoPage() {
           </h1>
           <p className="mt-4 max-w-3xl text-sm leading-7 text-[var(--muted)]">
             This route skips SQLite and async workers so it can run on Vercel.
-            It is only for validating whether remote execution can complete the
-            YouTube to transcript to translation to TTS chain.
+            It is for validating whether remote execution can complete an Apple
+            Podcasts or YouTube clip through transcript, translation, and
+            Chinese TTS in one request.
           </p>
         </section>
 

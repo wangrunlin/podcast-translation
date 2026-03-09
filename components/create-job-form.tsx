@@ -4,7 +4,8 @@ import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { getSessionId } from "@/lib/session";
 
-const SAMPLE_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+const SAMPLE_URL =
+  "https://podcasts.apple.com/us/podcast/english-in-a-minute/id1617614727?uo=4";
 
 export function CreateJobForm() {
   const router = useRouter();
@@ -47,7 +48,7 @@ export function CreateJobForm() {
           id="source-url"
           value={url}
           onChange={(event) => setUrl(event.target.value)}
-          placeholder="Paste a YouTube podcast URL or a direct audio URL."
+          placeholder="Paste an Apple Podcasts URL, a YouTube podcast URL, or a direct audio URL."
           className="min-h-32 w-full rounded-[24px] border border-[var(--line)] bg-white px-4 py-4 text-sm outline-none transition focus:border-[var(--accent)]"
         />
       </div>

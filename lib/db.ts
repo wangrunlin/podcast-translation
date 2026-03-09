@@ -2,25 +2,24 @@ import Database from "better-sqlite3";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const dataDir = path.join(process.cwd(), "storage");
-const dbPath = path.join(dataDir, "app.db");
-
-fs.mkdirSync(dataDir, { recursive: true });
-
 const globalForDb = globalThis as typeof globalThis & {
   __podcastTranslationDb?: Database.Database;
 };
 
+const dbConfig = resolveDbConfig();
+
 export const db =
   globalForDb.__podcastTranslationDb ??
-  new Database(dbPath, {
+  new Database(dbConfig.dbPath, {
     fileMustExist: false,
     timeout: 5000,
   });
 
 if (!globalForDb.__podcastTranslationDb) {
   db.pragma("busy_timeout = 5000");
-  db.pragma("journal_mode = WAL");
+  if (!dbConfig.inMemory) {
+    db.pragma("journal_mode = WAL");
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS jobs (
       id TEXT PRIMARY KEY,
@@ -58,4 +57,29 @@ if (!globalForDb.__podcastTranslationDb) {
   `);
 
   globalForDb.__podcastTranslationDb = db;
+}
+
+function resolveDbConfig() {
+  const candidates = [
+    path.join(process.cwd(), "storage"),
+    path.join("/tmp", "podcast-translation"),
+  ];
+
+  for (const dataDir of candidates) {
+    try {
+      fs.mkdirSync(dataDir, { recursive: true });
+      fs.accessSync(dataDir, fs.constants.W_OK);
+      return {
+        dbPath: path.join(dataDir, "app.db"),
+        inMemory: false,
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  return {
+    dbPath: ":memory:",
+    inMemory: true,
+  };
 }

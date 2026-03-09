@@ -43,12 +43,12 @@ export async function POST(request: NextRequest) {
 
     if (
       extracted.metadata.durationSeconds &&
-      extracted.metadata.durationSeconds > 2 * 60
+      extracted.metadata.durationSeconds > 8 * 60
     ) {
       return NextResponse.json(
         {
           error:
-            "This sync demo only accepts clips up to 2 minutes. Use a shorter episode sample.",
+            "This sync demo only accepts clips up to 8 minutes. Use a shorter episode sample.",
         },
         { status: 400 },
       );
@@ -72,9 +72,9 @@ export async function POST(request: NextRequest) {
 
 async function extractFromUrl(sourceUrl: string) {
   const platform = detectPlatform(sourceUrl);
-  if (platform !== "youtube" && platform !== "direct") {
+  if (platform !== "youtube" && platform !== "direct" && platform !== "apple") {
     throw new Error(
-      "This sync demo only supports YouTube URLs or direct audio links.",
+      "This sync demo supports Apple Podcasts, YouTube URLs, or direct audio links.",
     );
   }
 
@@ -116,6 +116,10 @@ function detectPlatform(sourceUrl: string) {
 
   if (normalized.includes("youtube.com") || normalized.includes("youtu.be")) {
     return "youtube" as const;
+  }
+
+  if (normalized.includes("podcasts.apple.com")) {
+    return "apple" as const;
   }
 
   if (/\.(mp3|m4a|wav|ogg)(\?.*)?$/i.test(sourceUrl)) {

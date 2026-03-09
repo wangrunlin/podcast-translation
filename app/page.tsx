@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { CreateJobForm } from "@/components/create-job-form";
 import { RecentJobs } from "@/components/recent-jobs";
 import { listRecentJobs } from "@/lib/jobs";
@@ -29,7 +30,7 @@ export default function Home() {
             </div>
             <div className="mt-10 grid gap-4 sm:grid-cols-3">
               {[
-                "YouTube Podcast first, with direct audio URL fallback.",
+                "Apple Podcasts and YouTube are supported, with direct audio URL fallback.",
                 "Async pipeline with stable result pages and session history.",
                 "OpenRouter for ASR + translation, MiniMax for Chinese TTS.",
               ].map((item) => (
@@ -40,6 +41,17 @@ export default function Home() {
                   {item}
                 </div>
               ))}
+            </div>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Link
+                href="/demo"
+                className="rounded-full bg-[var(--foreground)] px-5 py-3 text-sm font-semibold text-white transition hover:opacity-90"
+              >
+                Open instant demo
+              </Link>
+              <p className="self-center text-sm text-[var(--muted)]">
+                On Vercel, use the instant demo page for Apple Podcasts and quick playback.
+              </p>
             </div>
           </div>
 
@@ -65,9 +77,9 @@ export default function Home() {
                   Supported inputs
                 </p>
                 <p className="mt-2">
-                  YouTube podcast/video URLs are the primary entry point. Direct
-                  audio links ending in mp3, m4a, wav, or ogg are supported as a
-                  deterministic fallback.
+                  Apple Podcasts show links and YouTube podcast/video URLs are
+                  supported. Direct audio links ending in mp3, m4a, wav, or ogg
+                  are also supported as a deterministic fallback.
                 </p>
               </div>
               <div className="rounded-3xl bg-white/60 p-4">

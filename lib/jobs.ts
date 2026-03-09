@@ -56,7 +56,7 @@ export function createJob(input: CreateJobInput) {
 
   if (platform === "unknown") {
     throw new Error(
-      "This demo currently supports YouTube podcast URLs or direct audio files only.",
+      "This demo currently supports Apple Podcasts, YouTube podcast URLs, or direct audio files.",
     );
   }
 

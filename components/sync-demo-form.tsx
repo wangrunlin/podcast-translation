@@ -3,7 +3,20 @@
 import { useState, useTransition } from "react";
 import type { TranscriptSegment } from "@/lib/types";
 
-const SAMPLE_URL = "https://www.youtube.com/watch?v=oeIUhjCyNDM";
+const SAMPLE_LINKS = [
+  {
+    label: "Apple / English in a Minute",
+    url: "https://podcasts.apple.com/us/podcast/english-in-a-minute/id1617614727?uo=4",
+  },
+  {
+    label: "Apple / 60-Second Mind",
+    url: "https://podcasts.apple.com/us/podcast/60-second-mind/id262750202?uo=4",
+  },
+  {
+    label: "YouTube / VOA sample",
+    url: "https://www.youtube.com/watch?v=oeIUhjCyNDM",
+  },
+] as const;
 
 type DemoResult = {
   metadata: {
@@ -18,7 +31,7 @@ type DemoResult = {
 };
 
 export function SyncDemoForm() {
-  const [url, setUrl] = useState(SAMPLE_URL);
+  const [url, setUrl] = useState<string>(SAMPLE_LINKS[0].url);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<DemoResult | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -27,7 +40,7 @@ export function SyncDemoForm() {
     <section className="panel rounded-[32px] p-8">
       <div className="space-y-4">
         <label htmlFor="sync-source" className="text-sm font-medium">
-          Short YouTube clip
+          Apple Podcasts / YouTube clip
         </label>
         <textarea
           id="sync-source"
@@ -35,6 +48,21 @@ export function SyncDemoForm() {
           onChange={(event) => setUrl(event.target.value)}
           className="min-h-28 w-full rounded-[24px] border border-[var(--line)] bg-white px-4 py-4 text-sm outline-none"
         />
+        <div className="grid gap-2 rounded-[24px] border border-[var(--line)] bg-white/70 p-4 text-sm text-[var(--muted)]">
+          <p className="font-medium text-[var(--foreground)]">Tested samples</p>
+          <div className="flex flex-wrap gap-2">
+            {SAMPLE_LINKS.map((sample) => (
+              <button
+                key={sample.url}
+                type="button"
+                onClick={() => setUrl(sample.url)}
+                className="rounded-full border border-[var(--line)] bg-white px-4 py-2 text-xs font-semibold text-[var(--foreground)]"
+              >
+                {sample.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="flex flex-wrap gap-3">
           <button
             type="button"
@@ -65,10 +93,10 @@ export function SyncDemoForm() {
           </button>
           <button
             type="button"
-            onClick={() => setUrl(SAMPLE_URL)}
+            onClick={() => setUrl(SAMPLE_LINKS[0].url)}
             className="rounded-full border border-[var(--line)] bg-white px-5 py-3 text-sm font-semibold"
           >
-            Use tested sample
+            Use fastest sample
           </button>
         </div>
       </div>
