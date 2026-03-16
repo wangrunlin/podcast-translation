@@ -68,10 +68,12 @@ export function CreateJobForm() {
   const [status, setStatus] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [result, setResult] = useState<JobRecord | null>(null);
+  const [audioDataUrl, setAudioDataUrl] = useState<string | null>(null);
 
   async function submit(value: string) {
     setError(null);
     setResult(null);
+    setAudioDataUrl(null);
 
     const cached = getCachedResult(value);
     if (cached) {
@@ -95,6 +97,7 @@ export function CreateJobForm() {
     const data = (await response.json()) as {
       error?: string;
       job?: JobRecord;
+      audioDataUrl?: string | null;
       cacheHit?: boolean;
     };
 
@@ -112,6 +115,7 @@ export function CreateJobForm() {
 
     setCachedResult(value, data.job);
     setResult(data.job);
+    setAudioDataUrl(data.audioDataUrl ?? null);
     setStatus(null);
   }
 
@@ -186,12 +190,12 @@ export function CreateJobForm() {
         {isPending ? "Processing..." : "Translate episode"}
       </button>
 
-      {result ? <InlineResult job={result} /> : null}
+      {result ? <InlineResult job={result} audioDataUrl={audioDataUrl} /> : null}
     </div>
   );
 }
 
-function InlineResult({ job }: { job: JobRecord }) {
+function InlineResult({ job, audioDataUrl }: { job: JobRecord; audioDataUrl: string | null }) {
   const [activeTab, setActiveTab] = useState<TranscriptTab>("translated");
   const transcript = selectTranscript(job, activeTab);
 
@@ -236,13 +240,13 @@ function InlineResult({ job }: { job: JobRecord }) {
           />
         ) : null}
 
-        {job.audioTranslatedPath ? (
+        {audioDataUrl || job.audioTranslatedPath ? (
           <div className="mt-4 space-y-3">
             <p className="text-sm font-semibold">Translated audio (Chinese)</p>
             <audio
               controls
               className="w-full"
-              src={job.audioTranslatedPath}
+              src={audioDataUrl ?? job.audioTranslatedPath ?? undefined}
               preload="metadata"
             />
             <p className="text-xs text-[var(--muted)]">

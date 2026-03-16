@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import { NextRequest, NextResponse } from "next/server";
 import { createJob, getJobById, failJob } from "@/lib/jobs";
 import { processJob } from "@/lib/worker";
@@ -46,8 +47,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const audioDataUrl = readAudioAsDataUrl(completed.id);
+
     return NextResponse.json({
       job: completed,
+      audioDataUrl,
       cacheHit,
     });
   } catch (error) {
@@ -76,4 +80,17 @@ export async function GET(request: NextRequest) {
   }
 
   return NextResponse.json({ job });
+}
+
+function readAudioAsDataUrl(jobId: string): string | null {
+  const filePath = `/tmp/podcast-output/${jobId}.mp3`;
+  try {
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    const buffer = fs.readFileSync(filePath);
+    return `data:audio/mpeg;base64,${buffer.toString("base64")}`;
+  } catch {
+    return null;
+  }
 }
