@@ -524,7 +524,8 @@ async function extractYoutubeTranscript(sourceUrl: string) {
       .filter((segment): segment is TranscriptSegment => Boolean(segment));
 
     return mergeTranscriptSegments(segments);
-  } catch {
+  } catch (error) {
+    console.error("YouTube transcript extraction failed:", error);
     return [];
   }
 }
@@ -548,7 +549,8 @@ async function getYoutubeMetadata(sourceUrl: string): Promise<YoutubeMetadata> {
           : null,
       coverUrl: readText(info.basic_info?.thumbnail?.[0]?.url),
     };
-  } catch {
+  } catch (error) {
+    console.error("YouTube metadata fetch failed:", error);
     return emptyYoutubeMetadata();
   }
 }
@@ -577,7 +579,8 @@ async function tryDownloadYoutubeAudio(id: string, sourceUrl: string, tempDir: s
     const normalizedPath = path.join(tempDir, `${id}-source.mp3`);
     await normalizeAudio(downloaded, normalizedPath);
     return normalizedPath;
-  } catch {
+  } catch (error) {
+    console.error("yt-dlp audio download failed:", error);
     return null;
   }
 }

@@ -151,7 +151,7 @@ export async function synthesizeChineseAudio(
   const audioBase64 = await synthesizeChineseAudioBase64(segments, {
     voiceId: clone.voiceId,
   });
-  const outputPath = path.join(process.cwd(), "storage", "output", `${jobId}.mp3`);
+  const outputPath = path.join("/tmp", "podcast-output", `${jobId}.mp3`);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, Buffer.from(audioBase64, "base64"));
   return {

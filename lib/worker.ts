@@ -98,9 +98,24 @@ export async function processJob(jobId: string) {
 }
 
 function copyOutputToPublic(jobId: string, sourcePath: string) {
-  const publicDir = path.join(process.cwd(), "public", "generated");
-  fs.mkdirSync(publicDir, { recursive: true });
-  const targetPath = path.join(publicDir, `${jobId}.mp3`);
-  fs.copyFileSync(sourcePath, targetPath);
-  return `/generated/${jobId}.mp3`;
+  const candidates = [
+    path.join(process.cwd(), "public", "generated"),
+    path.join("/tmp", "podcast-output"),
+  ];
+
+  for (const dir of candidates) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const targetPath = path.join(dir, `${jobId}.mp3`);
+      fs.copyFileSync(sourcePath, targetPath);
+      if (dir.startsWith("/tmp")) {
+        return `/api/audio/${jobId}`;
+      }
+      return `/generated/${jobId}.mp3`;
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error(`Failed to copy output audio for job ${jobId}`);
 }

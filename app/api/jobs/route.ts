@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createJob, getJobById } from "@/lib/jobs";
-import { enqueueJob } from "@/lib/queue";
+import { createJob, getJobById, failJob } from "@/lib/jobs";
+import { processJob } from "@/lib/worker";
 import { createJobSchema } from "@/lib/validators";
+
+export const maxDuration = 60;
+
+const PROCESS_TIMEOUT_MS = 55_000;
 
 export async function POST(request: NextRequest) {
   const payload = await request.json().catch(() => null);
@@ -17,19 +21,44 @@ export async function POST(request: NextRequest) {
   try {
     const job = createJob(parsed.data);
     const cacheHit = job.status === "completed";
+
     if (!cacheHit) {
-      enqueueJob(job.id);
+      await Promise.race([
+        processJob(job.id),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("Processing timed out. Try a shorter episode.")),
+            PROCESS_TIMEOUT_MS,
+          ),
+        ),
+      ]).catch((error) => {
+        failJob(job.id, "timeout", error instanceof Error ? error.message : "Timed out");
+        throw error;
+      });
+    }
+
+    const completed = getJobById(job.id);
+
+    if (!completed) {
+      return NextResponse.json(
+        { error: "Job processing failed unexpectedly." },
+        { status: 500 },
+      );
     }
 
     return NextResponse.json({
-      jobId: job.id,
-      redirectTo: `/jobs/${job.id}`,
+      job: completed,
       cacheHit,
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to create this job.";
-    return NextResponse.json({ error: message }, { status: 400 });
+    const isUserError =
+      message.includes("currently supports") || message.includes("Please paste");
+    return NextResponse.json(
+      { error: message },
+      { status: isUserError ? 400 : 500 },
+    );
   }
 }
 
