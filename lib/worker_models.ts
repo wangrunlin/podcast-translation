@@ -70,7 +70,20 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
     throw new Error("OpenRouter transcription returned an empty response.");
   }
 
-  const parsed = JSON.parse(content) as { segments?: TranscriptSegment[] };
+  let parsed: { segments?: TranscriptSegment[] };
+  try {
+    parsed = safeJsonParse<{ segments?: TranscriptSegment[] }>(content);
+  } catch {
+    // Model may hallucinate mixed formats (box_2d, etc.) partway through.
+    // Extract valid segments from the partial JSON.
+    console.error(`[ASR] JSON parse failed (${content.length} chars). Attempting partial extraction.`);
+    const rescued = rescueSegmentsFromPartialJson(content);
+    if (rescued.length > 0) {
+      console.log(`[ASR] Rescued ${rescued.length} segments from partial output.`);
+      return rescued;
+    }
+    throw new Error(`Transcription returned malformed JSON (${content.length} chars). No valid segments could be recovered.`);
+  }
   if (!parsed.segments || parsed.segments.length === 0) {
     throw new Error("Transcription response did not include segments.");
   }
@@ -88,6 +101,22 @@ export async function translateSegments(
     }));
   }
 
+  // Translate in batches to avoid model output length limits
+  const BATCH_SIZE = 20;
+  const results: TranscriptSegment[] = [];
+
+  for (let i = 0; i < segments.length; i += BATCH_SIZE) {
+    const batch = segments.slice(i, i + BATCH_SIZE);
+    const translated = await translateBatch(batch);
+    results.push(...translated);
+  }
+
+  return results;
+}
+
+async function translateBatch(
+  segments: TranscriptSegment[],
+): Promise<TranscriptSegment[]> {
   const response = await fetch(`${env.openRouterBaseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -127,7 +156,18 @@ export async function translateSegments(
     throw new Error("OpenRouter translation returned an empty response.");
   }
 
-  const parsed = JSON.parse(content) as { segments?: TranscriptSegment[] };
+  let parsed: { segments?: TranscriptSegment[] };
+  try {
+    parsed = safeJsonParse<{ segments?: TranscriptSegment[] }>(content);
+  } catch {
+    console.error(`[Translation] JSON parse failed (${content.length} chars). Attempting partial extraction.`);
+    const rescued = rescueTranslationSegments(content);
+    if (rescued.length > 0) {
+      console.log(`[Translation] Rescued ${rescued.length} segments from partial output.`);
+      return rescued;
+    }
+    throw new Error(`Translation returned malformed JSON (${content.length} chars). No valid segments could be recovered.`);
+  }
   if (!parsed.segments || parsed.segments.length === 0) {
     throw new Error("Translation response did not include segments.");
   }
@@ -461,6 +501,221 @@ function detectAudioFormat(audioPath: string) {
   }
 
   return "mp3";
+}
+
+/**
+ * Extract the first complete JSON object from a string by counting braces.
+ * Handles cases where models output multiple JSON objects concatenated.
+ */
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === "\\" && i + 1 < text.length) {
+        i++; // skip escaped char
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Parse JSON from AI model output, tolerating common issues:
+ * - Markdown code fences
+ * - Control characters
+ * - Trailing commas
+ * - Doubled/escaped quotes from the model (e.g. ""word"" or \"\"word\"\")
+ */
+function safeJsonParse<T>(raw: string): T {
+  // Strip markdown code fences
+  let cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+
+  // Remove control characters (except \t \n \r)
+  // eslint-disable-next-line no-control-regex
+  cleaned = cleaned.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
+
+  // Try as-is first
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    // pass
+  }
+
+  // Fix trailing commas
+  let fixed = cleaned.replace(/,\s*]/g, "]").replace(/,\s*}/g, "}");
+  try {
+    return JSON.parse(fixed) as T;
+  } catch {
+    // pass
+  }
+
+  // Fix doubled quotes inside strings: ""word"" -> \"word\"
+  // This pattern finds "" that aren't at a string boundary (not after : or before ,/}/])
+  fixed = repairDoubledQuotes(fixed);
+  try {
+    return JSON.parse(fixed) as T;
+  } catch {
+    // pass
+  }
+
+  // Fix Gemini hallucination: "box_2d": [startMs, "endMs": ... -> "startMs": startMs, "endMs": ...
+  fixed = fixed.replace(
+    /\{\s*"box_2d"\s*:\s*\[(\d+)\s*,\s*"endMs"/g,
+    '{"startMs": $1, "endMs"'
+  );
+  try {
+    return JSON.parse(fixed) as T;
+  } catch {
+    // pass
+  }
+
+  // Try extracting the first complete JSON object by brace-matching
+  const firstComplete = extractFirstJsonObject(fixed);
+  if (firstComplete) {
+    try {
+      return JSON.parse(firstComplete) as T;
+    } catch {
+      // pass
+    }
+  }
+
+  // Last resort: extract JSON substring between first { and last }
+  const firstBrace = fixed.indexOf("{");
+  const lastBrace = fixed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const extracted = fixed.slice(firstBrace, lastBrace + 1);
+    return JSON.parse(extracted) as T;
+  }
+
+  throw new Error(`Unable to parse JSON from model output (${raw.length} chars)`);
+}
+
+/**
+ * Repair doubled quotes that AI models produce inside JSON string values.
+ * Example: "he said ""hello"" to me" -> "he said \"hello\" to me"
+ */
+/**
+ * Extract valid transcript segments from partially corrupted JSON.
+ * The Gemini model sometimes starts hallucinating box_2d objects
+ * partway through the response. This extracts all valid segments
+ * before the corruption point.
+ */
+function rescueSegmentsFromPartialJson(raw: string): TranscriptSegment[] {
+  const segments: TranscriptSegment[] = [];
+  const segmentPattern = /\{\s*"startMs"\s*:\s*(\d+)\s*,\s*"endMs"\s*:\s*(\d+)\s*,\s*"sourceText"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = segmentPattern.exec(raw)) !== null) {
+    const startMs = parseInt(match[1]);
+    const endMs = parseInt(match[2]);
+    const sourceText = match[3]
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, " ")
+      .replace(/\\\\/g, "\\");
+
+    if (sourceText.trim().length > 0 && endMs > startMs) {
+      segments.push({ startMs, endMs, sourceText });
+    }
+  }
+
+  return segments;
+}
+
+/**
+ * Extract valid translation segments from partially corrupted JSON.
+ * Matches segments that include translatedText.
+ */
+function rescueTranslationSegments(raw: string): TranscriptSegment[] {
+  const segments: TranscriptSegment[] = [];
+  const pattern = /\{\s*"startMs"\s*:\s*(\d+)\s*,\s*"endMs"\s*:\s*(\d+)\s*,\s*"sourceText"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"translatedText"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(raw)) !== null) {
+    const startMs = parseInt(match[1]);
+    const endMs = parseInt(match[2]);
+    const sourceText = match[3].replace(/\\"/g, '"').replace(/\\n/g, " ").replace(/\\\\/g, "\\");
+    const translatedText = match[4].replace(/\\"/g, '"').replace(/\\n/g, " ").replace(/\\\\/g, "\\");
+
+    if (translatedText.trim().length > 0) {
+      segments.push({ startMs, endMs, sourceText, translatedText });
+    }
+  }
+
+  return segments;
+}
+
+function repairDoubledQuotes(json: string): string {
+  const result: string[] = [];
+  let inString = false;
+  let i = 0;
+
+  while (i < json.length) {
+    const ch = json[i];
+
+    if (!inString) {
+      result.push(ch);
+      if (ch === '"') {
+        inString = true;
+      }
+      i++;
+      continue;
+    }
+
+    // Inside a string
+    if (ch === '\\') {
+      // Escaped character — keep both
+      result.push(ch, json[i + 1] ?? "");
+      i += 2;
+      continue;
+    }
+
+    if (ch === '"') {
+      const next = json[i + 1];
+      // Check if this is a doubled quote inside a string: ""
+      // A real string-end quote is followed by , } ] : or whitespace
+      if (next === '"') {
+        // Look ahead past the second quote
+        const afterPair = json[i + 2];
+        // If after "" we see a letter/digit/space that continues text,
+        // this is a doubled-quote inside the string
+        if (afterPair && afterPair !== ',' && afterPair !== '}' && afterPair !== ']' && afterPair !== ':') {
+          result.push('\\"');
+          i += 2;
+          continue;
+        }
+        // If "" is followed by , } ] etc., treat first " as end of string
+        // and second " as start of next string — this is normal JSON
+      }
+      // Normal end of string
+      result.push(ch);
+      inString = false;
+      i++;
+      continue;
+    }
+
+    result.push(ch);
+    i++;
+  }
+
+  return result.join("");
 }
 
 function getFfmpegBinary() {
