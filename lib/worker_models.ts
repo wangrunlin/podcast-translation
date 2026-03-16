@@ -228,7 +228,7 @@ async function maybeCreateVoiceClone(
   sourceAudioPath: string | null,
   originalSegments: TranscriptSegment[],
 ): Promise<VoiceCloneResult> {
-  if (!hasMiniMax() || !sourceAudioPath || originalSegments.length === 0 || !ffmpegPath) {
+  if (!hasMiniMax() || !sourceAudioPath || originalSegments.length === 0 || !getFfmpegBinary()) {
     return { voiceId: null, cloneStatus: null };
   }
 
@@ -410,11 +410,12 @@ async function createMockAudioBase64(text: string) {
   const safeText = text.replace(/[^a-zA-Z0-9 .,]/g, " ").slice(0, 150);
 
   try {
-    if (!ffmpegPath) {
+    const ffmpegBin = getFfmpegBinary();
+    if (!ffmpegBin) {
       throw new Error("ffmpeg unavailable");
     }
 
-    await execFileAsync(ffmpegPath, [
+    await execFileAsync(ffmpegBin, [
       "-f",
       "lavfi",
       "-i",
@@ -463,7 +464,7 @@ function detectAudioFormat(audioPath: string) {
 }
 
 function getFfmpegBinary() {
-  if (!ffmpegPath) {
+  if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
     return null;
   }
 

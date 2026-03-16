@@ -272,8 +272,12 @@ async function downloadFile(url: string, destinationPath: string) {
 }
 
 async function getAudioDurationSeconds(filePath: string) {
-  const ffprobePath = ensureExecutable(ffprobe.path);
-  const { stdout } = await execFileAsync(ffprobePath, [
+  const ffprobeBinary = ensureExecutable(ffprobe.path);
+  if (!ffprobeBinary) {
+    return null;
+  }
+
+  const { stdout } = await execFileAsync(ffprobeBinary, [
     "-v",
     "error",
     "-show_entries",
@@ -784,7 +788,11 @@ async function fetchJson<T>(url: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-function ensureExecutable(binaryPath: string) {
+function ensureExecutable(binaryPath: string): string | null {
+  if (!fs.existsSync(binaryPath)) {
+    return null;
+  }
+
   try {
     fs.chmodSync(binaryPath, 0o755);
   } catch {
