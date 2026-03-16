@@ -23,7 +23,26 @@ const xmlParser = new XMLParser({
   parseTagValue: false,
 });
 
-const ytDlpCacheDir = path.join(process.cwd(), "storage", "bin");
+const ytDlpCacheDir = resolveTempDir("bin");
+
+function resolveTempDir(subdir: string): string {
+  const candidates = [
+    path.join(process.cwd(), "storage", subdir),
+    path.join("/tmp", "podcast-translation", subdir),
+  ];
+
+  for (const dir of candidates) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.accessSync(dir, fs.constants.W_OK);
+      return dir;
+    } catch {
+      continue;
+    }
+  }
+
+  return path.join(os.tmpdir(), `podcast-translation-${subdir}`);
+}
 
 export type ExtractResult = {
   metadata: EpisodeMetadata;
@@ -33,7 +52,7 @@ export type ExtractResult = {
 };
 
 export async function extractEpisode(job: JobRecord): Promise<ExtractResult> {
-  const tempDir = path.join(process.cwd(), "storage", "source");
+  const tempDir = resolveTempDir("source");
   fs.mkdirSync(tempDir, { recursive: true });
 
   return extractSourceToTemp({

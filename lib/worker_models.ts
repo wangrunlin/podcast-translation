@@ -272,7 +272,7 @@ async function extractVoiceCloneSample(
   const startSeconds = Math.max(candidate.startMs / 1000, 0);
   const rawDurationSeconds = Math.max((candidate.endMs - candidate.startMs) / 1000, 0);
   const durationSeconds = Math.max(8, Math.min(28, rawDurationSeconds));
-  const samplePath = path.join(process.cwd(), "storage", "output", `${jobId}-clone-sample.mp3`);
+  const samplePath = path.join("/tmp", "podcast-output", `${jobId}-clone-sample.mp3`);
   const ffmpegBinary = getFfmpegBinary();
   if (!ffmpegBinary) {
     return null;
@@ -402,9 +402,8 @@ function createMockTranscript(): TranscriptSegment[] {
 
 async function createMockAudioBase64(text: string) {
   const outputPath = path.join(
-    process.cwd(),
-    "storage",
-    "output",
+    "/tmp",
+    "podcast-output",
     `mock-${Date.now()}.mp3`,
   );
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
