@@ -10,8 +10,8 @@ const SAMPLE_LINKS = [
     url: "https://podcasts.apple.com/cn/podcast/491-openclaw-the-viral-ai-agent-that-broke-the/id1434243584?i=1000749366733",
   },
   {
-    label: "Apple / BBC Global News",
-    url: "https://podcasts.apple.com/us/podcast/bbc-global-news-podcast/id135067274?i=1000698226228",
+    label: "Apple / NPR News Now (5min)",
+    url: "https://podcasts.apple.com/us/podcast/id121493675?i=1000755679151",
   },
   {
     label: "YouTube / AI founders clip",
