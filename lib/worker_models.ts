@@ -8,6 +8,19 @@ import type { TranscriptSegment } from "@/lib/types";
 
 const execFileAsync = promisify(execFile);
 
+function extractJson(raw: string): string {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced) {
+    return fenced[1].trim();
+  }
+  const braceStart = raw.indexOf("{");
+  const braceEnd = raw.lastIndexOf("}");
+  if (braceStart !== -1 && braceEnd > braceStart) {
+    return raw.slice(braceStart, braceEnd + 1);
+  }
+  return raw;
+}
+
 type VoiceCloneResult = {
   voiceId: string | null;
   cloneStatus: "ready" | "failed" | null;
@@ -70,7 +83,7 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
     throw new Error("OpenRouter transcription returned an empty response.");
   }
 
-  const parsed = JSON.parse(content) as { segments?: TranscriptSegment[] };
+  const parsed = JSON.parse(extractJson(content)) as { segments?: TranscriptSegment[] };
   if (!parsed.segments || parsed.segments.length === 0) {
     throw new Error("Transcription response did not include segments.");
   }
@@ -127,7 +140,7 @@ export async function translateSegments(
     throw new Error("OpenRouter translation returned an empty response.");
   }
 
-  const parsed = JSON.parse(content) as { segments?: TranscriptSegment[] };
+  const parsed = JSON.parse(extractJson(content)) as { segments?: TranscriptSegment[] };
   if (!parsed.segments || parsed.segments.length === 0) {
     throw new Error("Translation response did not include segments.");
   }
