@@ -86,32 +86,41 @@ function repairTruncatedJson(json: string): string {
 }
 
 async function maybeTrimAudio(audioPath: string, maxSeconds: number): Promise<string> {
-  const ffmpegBin = getFfmpegBinary();
-  if (!ffmpegBin) {
-    return audioPath;
-  }
-
   const stat = fs.statSync(audioPath);
-  // Only trim if file is larger than ~5MB (rough heuristic for long audio)
-  if (stat.size < 5 * 1024 * 1024) {
-    return audioPath;
+  const MAX_BYTES = 2 * 1024 * 1024; // 2MB ~= 2min at 128kbps
+
+  // Try ffmpeg first for proper trimming
+  const ffmpegBin = getFfmpegBinary();
+  if (ffmpegBin && stat.size > MAX_BYTES) {
+    const trimmedPath = audioPath.replace(/(\.\w+)$/, `-trimmed$1`);
+    try {
+      await execFileAsync(ffmpegBin, [
+        "-i", audioPath,
+        "-t", `${Math.min(maxSeconds, 120)}`,
+        "-ac", "1",
+        "-ar", "16000",
+        "-b:a", "64k",
+        trimmedPath,
+        "-y",
+      ]);
+      return trimmedPath;
+    } catch {
+      // Fall through to byte truncation
+    }
   }
 
-  const trimmedPath = audioPath.replace(/(\.\w+)$/, `-trimmed$1`);
-  try {
-    await execFileAsync(ffmpegBin, [
-      "-i", audioPath,
-      "-t", `${maxSeconds}`,
-      "-ac", "1",
-      "-ar", "16000",
-      "-b:a", "64k",
-      trimmedPath,
-      "-y",
-    ]);
-    return trimmedPath;
-  } catch {
-    return audioPath;
+  // Fallback: byte-truncate the MP3 (MP3 frames are independent, safe to slice)
+  if (stat.size > MAX_BYTES) {
+    const truncatedPath = audioPath.replace(/(\.\w+)$/, `-truncated$1`);
+    const fd = fs.openSync(audioPath, "r");
+    const buffer = Buffer.alloc(MAX_BYTES);
+    fs.readSync(fd, buffer, 0, MAX_BYTES, 0);
+    fs.closeSync(fd);
+    fs.writeFileSync(truncatedPath, buffer);
+    return truncatedPath;
   }
+
+  return audioPath;
 }
 
 type VoiceCloneResult = {

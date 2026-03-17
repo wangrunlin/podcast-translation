@@ -261,14 +261,20 @@ async function extractAppleAudio(input: {
   };
 }
 
-async function downloadFile(url: string, destinationPath: string) {
-  const response = await fetch(url);
-  if (!response.ok || !response.body) {
+async function downloadFile(url: string, destinationPath: string, maxBytes?: number) {
+  const headers: Record<string, string> = {};
+  if (maxBytes) {
+    headers["Range"] = `bytes=0-${maxBytes - 1}`;
+  }
+
+  const response = await fetch(url, { headers });
+  if ((!response.ok && response.status !== 206) || !response.body) {
     throw new Error("Unable to download the source audio file.");
   }
 
   const arrayBuffer = await response.arrayBuffer();
-  fs.writeFileSync(destinationPath, Buffer.from(arrayBuffer));
+  const buffer = Buffer.from(arrayBuffer);
+  fs.writeFileSync(destinationPath, maxBytes ? buffer.subarray(0, maxBytes) : buffer);
 }
 
 async function getAudioDurationSeconds(filePath: string) {
