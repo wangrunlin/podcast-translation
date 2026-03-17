@@ -43,12 +43,12 @@ export async function POST(request: NextRequest) {
 
     if (
       extracted.metadata.durationSeconds &&
-      extracted.metadata.durationSeconds > 8 * 60
+      extracted.metadata.durationSeconds > 30 * 60
     ) {
       return NextResponse.json(
         {
           error:
-            "This sync demo only accepts clips up to 8 minutes. Use a shorter episode sample.",
+            "This sync demo only accepts clips up to 30 minutes. Use a shorter episode sample.",
         },
         { status: 400 },
       );

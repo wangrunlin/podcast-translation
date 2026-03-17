@@ -8,6 +8,121 @@ import type { TranscriptSegment } from "@/lib/types";
 
 const execFileAsync = promisify(execFile);
 
+function safeJsonParse<T>(raw: string): T {
+  // Strip markdown fences
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const text = fenced ? fenced[1].trim() : raw;
+
+  // Extract JSON object
+  const braceStart = text.indexOf("{");
+  const braceEnd = text.lastIndexOf("}");
+  if (braceStart === -1) {
+    return JSON.parse(text);
+  }
+
+  const json = braceEnd > braceStart ? text.slice(braceStart, braceEnd + 1) : text.slice(braceStart);
+
+  try {
+    return JSON.parse(json);
+  } catch {
+    // Attempt to repair truncated JSON
+    const repaired = repairTruncatedJson(json);
+    return JSON.parse(repaired);
+  }
+}
+
+function repairTruncatedJson(json: string): string {
+  let fixed = json;
+
+  // Close any unclosed string
+  let inString = false;
+  let escape = false;
+  for (const ch of fixed) {
+    if (escape) { escape = false; continue; }
+    if (ch === "\\") { escape = true; continue; }
+    if (ch === '"') { inString = !inString; }
+  }
+  if (inString) {
+    fixed += '"';
+  }
+
+  // Remove last incomplete key-value or object
+  // Try progressively removing trailing content until brackets balance
+  const attempts = [
+    fixed,
+    fixed.replace(/,\s*"[^"]*"\s*:\s*"[^"]*"\s*$/, ""),
+    fixed.replace(/,\s*\{[^{}]*$/, ""),
+    fixed.replace(/,\s*"[^"]*"\s*$/, ""),
+  ];
+
+  for (const attempt of attempts) {
+    let braces = 0;
+    let brackets = 0;
+    let inStr = false;
+    let esc = false;
+    for (const ch of attempt) {
+      if (esc) { esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === "{") braces++;
+      if (ch === "}") braces--;
+      if (ch === "[") brackets++;
+      if (ch === "]") brackets--;
+    }
+
+    let closed = attempt;
+    for (let i = 0; i < brackets; i++) closed += "]";
+    for (let i = 0; i < braces; i++) closed += "}";
+
+    try {
+      return closed;
+    } catch {
+      continue;
+    }
+  }
+
+  return fixed;
+}
+
+async function maybeTrimAudio(audioPath: string, maxSeconds: number): Promise<string> {
+  const stat = fs.statSync(audioPath);
+  const MAX_BYTES = 2 * 1024 * 1024; // 2MB ~= 2min at 128kbps
+
+  // Try ffmpeg first for proper trimming
+  const ffmpegBin = getFfmpegBinary();
+  if (ffmpegBin && stat.size > MAX_BYTES) {
+    const trimmedPath = audioPath.replace(/(\.\w+)$/, `-trimmed$1`);
+    try {
+      await execFileAsync(ffmpegBin, [
+        "-i", audioPath,
+        "-t", `${Math.min(maxSeconds, 120)}`,
+        "-ac", "1",
+        "-ar", "16000",
+        "-b:a", "64k",
+        trimmedPath,
+        "-y",
+      ]);
+      return trimmedPath;
+    } catch {
+      // Fall through to byte truncation
+    }
+  }
+
+  // Fallback: byte-truncate the MP3 (MP3 frames are independent, safe to slice)
+  if (stat.size > MAX_BYTES) {
+    const truncatedPath = audioPath.replace(/(\.\w+)$/, `-truncated$1`);
+    const fd = fs.openSync(audioPath, "r");
+    const buffer = Buffer.alloc(MAX_BYTES);
+    fs.readSync(fd, buffer, 0, MAX_BYTES, 0);
+    fs.closeSync(fd);
+    fs.writeFileSync(truncatedPath, buffer);
+    return truncatedPath;
+  }
+
+  return audioPath;
+}
+
 type VoiceCloneResult = {
   voiceId: string | null;
   cloneStatus: "ready" | "failed" | null;
@@ -18,8 +133,9 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
     return createMockTranscript();
   }
 
-  const base64Audio = fs.readFileSync(audioPath).toString("base64");
-  const format = detectAudioFormat(audioPath);
+  const trimmedPath = await maybeTrimAudio(audioPath, 600);
+  const base64Audio = fs.readFileSync(trimmedPath).toString("base64");
+  const format = detectAudioFormat(trimmedPath);
   const response = await fetch(`${env.openRouterBaseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -30,19 +146,20 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
     },
     body: JSON.stringify({
       model: env.openRouterAsrModel,
+      max_tokens: 8192,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            'Transcribe the English audio and return strict JSON: {"segments":[{"startMs":0,"endMs":1000,"sourceText":"..."}]}',
+            'Transcribe the English audio and return strict JSON only, no markdown: {"segments":[{"startMs":0,"endMs":1000,"sourceText":"..."}]}',
         },
         {
           role: "user",
           content: [
             {
               type: "text",
-              text: "Transcribe this English podcast audio. Keep the wording faithful. Return 8-24 timestamped segments.",
+              text: "Transcribe this English podcast audio. Keep the wording faithful. Return 6-12 timestamped segments. Return ONLY valid JSON, no code fences.",
             },
             {
               type: "input_audio",
@@ -70,7 +187,7 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
     throw new Error("OpenRouter transcription returned an empty response.");
   }
 
-  const parsed = JSON.parse(content) as { segments?: TranscriptSegment[] };
+  const parsed = safeJsonParse(content) as { segments?: TranscriptSegment[] };
   if (!parsed.segments || parsed.segments.length === 0) {
     throw new Error("Transcription response did not include segments.");
   }
@@ -98,12 +215,13 @@ export async function translateSegments(
     },
     body: JSON.stringify({
       model: env.openRouterTranslationModel,
+      max_tokens: 8192,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            'Translate the transcript into natural simplified Chinese for audio listening. Return strict JSON: {"segments":[{"startMs":0,"endMs":1000,"sourceText":"...","translatedText":"..."}]}',
+            'Translate the transcript into natural simplified Chinese for audio listening. Return strict JSON only, no markdown: {"segments":[{"startMs":0,"endMs":1000,"sourceText":"...","translatedText":"..."}]}',
         },
         {
           role: "user",
@@ -127,7 +245,7 @@ export async function translateSegments(
     throw new Error("OpenRouter translation returned an empty response.");
   }
 
-  const parsed = JSON.parse(content) as { segments?: TranscriptSegment[] };
+  const parsed = safeJsonParse(content) as { segments?: TranscriptSegment[] };
   if (!parsed.segments || parsed.segments.length === 0) {
     throw new Error("Translation response did not include segments.");
   }
@@ -151,7 +269,7 @@ export async function synthesizeChineseAudio(
   const audioBase64 = await synthesizeChineseAudioBase64(segments, {
     voiceId: clone.voiceId,
   });
-  const outputPath = path.join(process.cwd(), "storage", "output", `${jobId}.mp3`);
+  const outputPath = path.join("/tmp", "podcast-output", `${jobId}.mp3`);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, Buffer.from(audioBase64, "base64"));
   return {
@@ -228,7 +346,7 @@ async function maybeCreateVoiceClone(
   sourceAudioPath: string | null,
   originalSegments: TranscriptSegment[],
 ): Promise<VoiceCloneResult> {
-  if (!hasMiniMax() || !sourceAudioPath || originalSegments.length === 0 || !ffmpegPath) {
+  if (!hasMiniMax() || !sourceAudioPath || originalSegments.length === 0 || !getFfmpegBinary()) {
     return { voiceId: null, cloneStatus: null };
   }
 
@@ -272,7 +390,7 @@ async function extractVoiceCloneSample(
   const startSeconds = Math.max(candidate.startMs / 1000, 0);
   const rawDurationSeconds = Math.max((candidate.endMs - candidate.startMs) / 1000, 0);
   const durationSeconds = Math.max(8, Math.min(28, rawDurationSeconds));
-  const samplePath = path.join(process.cwd(), "storage", "output", `${jobId}-clone-sample.mp3`);
+  const samplePath = path.join("/tmp", "podcast-output", `${jobId}-clone-sample.mp3`);
   const ffmpegBinary = getFfmpegBinary();
   if (!ffmpegBinary) {
     return null;
@@ -402,20 +520,20 @@ function createMockTranscript(): TranscriptSegment[] {
 
 async function createMockAudioBase64(text: string) {
   const outputPath = path.join(
-    process.cwd(),
-    "storage",
-    "output",
+    "/tmp",
+    "podcast-output",
     `mock-${Date.now()}.mp3`,
   );
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   const safeText = text.replace(/[^a-zA-Z0-9 .,]/g, " ").slice(0, 150);
 
   try {
-    if (!ffmpegPath) {
+    const ffmpegBin = getFfmpegBinary();
+    if (!ffmpegBin) {
       throw new Error("ffmpeg unavailable");
     }
 
-    await execFileAsync(ffmpegPath, [
+    await execFileAsync(ffmpegBin, [
       "-f",
       "lavfi",
       "-i",
@@ -464,7 +582,7 @@ function detectAudioFormat(audioPath: string) {
 }
 
 function getFfmpegBinary() {
-  if (!ffmpegPath) {
+  if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
     return null;
   }
 

@@ -23,7 +23,26 @@ const xmlParser = new XMLParser({
   parseTagValue: false,
 });
 
-const ytDlpCacheDir = path.join(process.cwd(), "storage", "bin");
+const ytDlpCacheDir = resolveTempDir("bin");
+
+function resolveTempDir(subdir: string): string {
+  const candidates = [
+    path.join(process.cwd(), "storage", subdir),
+    path.join("/tmp", "podcast-translation", subdir),
+  ];
+
+  for (const dir of candidates) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.accessSync(dir, fs.constants.W_OK);
+      return dir;
+    } catch {
+      continue;
+    }
+  }
+
+  return path.join(os.tmpdir(), `podcast-translation-${subdir}`);
+}
 
 export type ExtractResult = {
   metadata: EpisodeMetadata;
@@ -33,7 +52,7 @@ export type ExtractResult = {
 };
 
 export async function extractEpisode(job: JobRecord): Promise<ExtractResult> {
-  const tempDir = path.join(process.cwd(), "storage", "source");
+  const tempDir = resolveTempDir("source");
   fs.mkdirSync(tempDir, { recursive: true });
 
   return extractSourceToTemp({
@@ -242,19 +261,29 @@ async function extractAppleAudio(input: {
   };
 }
 
-async function downloadFile(url: string, destinationPath: string) {
-  const response = await fetch(url);
-  if (!response.ok || !response.body) {
+async function downloadFile(url: string, destinationPath: string, maxBytes?: number) {
+  const headers: Record<string, string> = {};
+  if (maxBytes) {
+    headers["Range"] = `bytes=0-${maxBytes - 1}`;
+  }
+
+  const response = await fetch(url, { headers });
+  if ((!response.ok && response.status !== 206) || !response.body) {
     throw new Error("Unable to download the source audio file.");
   }
 
   const arrayBuffer = await response.arrayBuffer();
-  fs.writeFileSync(destinationPath, Buffer.from(arrayBuffer));
+  const buffer = Buffer.from(arrayBuffer);
+  fs.writeFileSync(destinationPath, maxBytes ? buffer.subarray(0, maxBytes) : buffer);
 }
 
 async function getAudioDurationSeconds(filePath: string) {
-  const ffprobePath = ensureExecutable(ffprobe.path);
-  const { stdout } = await execFileAsync(ffprobePath, [
+  const ffprobeBinary = ensureExecutable(ffprobe.path);
+  if (!ffprobeBinary) {
+    return null;
+  }
+
+  const { stdout } = await execFileAsync(ffprobeBinary, [
     "-v",
     "error",
     "-show_entries",
@@ -524,7 +553,8 @@ async function extractYoutubeTranscript(sourceUrl: string) {
       .filter((segment): segment is TranscriptSegment => Boolean(segment));
 
     return mergeTranscriptSegments(segments);
-  } catch {
+  } catch (error) {
+    console.error("YouTube transcript extraction failed:", error);
     return [];
   }
 }
@@ -548,7 +578,8 @@ async function getYoutubeMetadata(sourceUrl: string): Promise<YoutubeMetadata> {
           : null,
       coverUrl: readText(info.basic_info?.thumbnail?.[0]?.url),
     };
-  } catch {
+  } catch (error) {
+    console.error("YouTube metadata fetch failed:", error);
     return emptyYoutubeMetadata();
   }
 }
@@ -577,7 +608,8 @@ async function tryDownloadYoutubeAudio(id: string, sourceUrl: string, tempDir: s
     const normalizedPath = path.join(tempDir, `${id}-source.mp3`);
     await normalizeAudio(downloaded, normalizedPath);
     return normalizedPath;
-  } catch {
+  } catch (error) {
+    console.error("yt-dlp audio download failed:", error);
     return null;
   }
 }
@@ -762,7 +794,11 @@ async function fetchJson<T>(url: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-function ensureExecutable(binaryPath: string) {
+function ensureExecutable(binaryPath: string): string | null {
+  if (!fs.existsSync(binaryPath)) {
+    return null;
+  }
+
   try {
     fs.chmodSync(binaryPath, 0o755);
   } catch {
