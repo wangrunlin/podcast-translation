@@ -10,15 +10,81 @@ const execFileAsync = promisify(execFile);
 
 function extractJson(raw: string): string {
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced) {
-    return fenced[1].trim();
+  const text = fenced ? fenced[1].trim() : raw;
+
+  const braceStart = text.indexOf("{");
+  const braceEnd = text.lastIndexOf("}");
+  if (braceStart === -1) {
+    return text;
   }
-  const braceStart = raw.indexOf("{");
-  const braceEnd = raw.lastIndexOf("}");
-  if (braceStart !== -1 && braceEnd > braceStart) {
-    return raw.slice(braceStart, braceEnd + 1);
+
+  let json = braceEnd > braceStart ? text.slice(braceStart, braceEnd + 1) : text.slice(braceStart);
+
+  try {
+    JSON.parse(json);
+    return json;
+  } catch {
+    // Attempt to repair truncated JSON by closing open brackets
+    const repaired = repairTruncatedJson(json);
+    return repaired;
   }
-  return raw;
+}
+
+function repairTruncatedJson(json: string): string {
+  // Remove trailing incomplete string value (e.g. `"sourceText": "some text that got cu`)
+  let fixed = json.replace(/,\s*"[^"]*"?\s*:\s*"[^"]*$/, "");
+  // Also remove trailing incomplete object entry
+  fixed = fixed.replace(/,\s*\{[^}]*$/, "");
+
+  // Count unclosed brackets
+  let openBraces = 0;
+  let openBrackets = 0;
+  let inString = false;
+  let escape = false;
+  for (const ch of fixed) {
+    if (escape) { escape = false; continue; }
+    if (ch === "\\") { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") openBraces++;
+    if (ch === "}") openBraces--;
+    if (ch === "[") openBrackets++;
+    if (ch === "]") openBrackets--;
+  }
+
+  for (let i = 0; i < openBrackets; i++) fixed += "]";
+  for (let i = 0; i < openBraces; i++) fixed += "}";
+
+  return fixed;
+}
+
+async function maybeTrimAudio(audioPath: string, maxSeconds: number): Promise<string> {
+  const ffmpegBin = getFfmpegBinary();
+  if (!ffmpegBin) {
+    return audioPath;
+  }
+
+  const stat = fs.statSync(audioPath);
+  // Only trim if file is larger than ~5MB (rough heuristic for long audio)
+  if (stat.size < 5 * 1024 * 1024) {
+    return audioPath;
+  }
+
+  const trimmedPath = audioPath.replace(/(\.\w+)$/, `-trimmed$1`);
+  try {
+    await execFileAsync(ffmpegBin, [
+      "-i", audioPath,
+      "-t", `${maxSeconds}`,
+      "-ac", "1",
+      "-ar", "16000",
+      "-b:a", "64k",
+      trimmedPath,
+      "-y",
+    ]);
+    return trimmedPath;
+  } catch {
+    return audioPath;
+  }
 }
 
 type VoiceCloneResult = {
@@ -31,8 +97,9 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
     return createMockTranscript();
   }
 
-  const base64Audio = fs.readFileSync(audioPath).toString("base64");
-  const format = detectAudioFormat(audioPath);
+  const trimmedPath = await maybeTrimAudio(audioPath, 600);
+  const base64Audio = fs.readFileSync(trimmedPath).toString("base64");
+  const format = detectAudioFormat(trimmedPath);
   const response = await fetch(`${env.openRouterBaseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -43,19 +110,20 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
     },
     body: JSON.stringify({
       model: env.openRouterAsrModel,
+      max_tokens: 4096,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            'Transcribe the English audio and return strict JSON: {"segments":[{"startMs":0,"endMs":1000,"sourceText":"..."}]}',
+            'Transcribe the English audio and return strict JSON only, no markdown: {"segments":[{"startMs":0,"endMs":1000,"sourceText":"..."}]}',
         },
         {
           role: "user",
           content: [
             {
               type: "text",
-              text: "Transcribe this English podcast audio. Keep the wording faithful. Return 8-24 timestamped segments.",
+              text: "Transcribe this English podcast audio. Keep the wording faithful. Return 8-24 timestamped segments. Return ONLY valid JSON, no code fences.",
             },
             {
               type: "input_audio",
@@ -111,12 +179,13 @@ export async function translateSegments(
     },
     body: JSON.stringify({
       model: env.openRouterTranslationModel,
+      max_tokens: 4096,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            'Translate the transcript into natural simplified Chinese for audio listening. Return strict JSON: {"segments":[{"startMs":0,"endMs":1000,"sourceText":"...","translatedText":"..."}]}',
+            'Translate the transcript into natural simplified Chinese for audio listening. Return strict JSON only, no markdown: {"segments":[{"startMs":0,"endMs":1000,"sourceText":"...","translatedText":"..."}]}',
         },
         {
           role: "user",
