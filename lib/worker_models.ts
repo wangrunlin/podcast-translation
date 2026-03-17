@@ -8,52 +8,79 @@ import type { TranscriptSegment } from "@/lib/types";
 
 const execFileAsync = promisify(execFile);
 
-function extractJson(raw: string): string {
+function safeJsonParse<T>(raw: string): T {
+  // Strip markdown fences
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
   const text = fenced ? fenced[1].trim() : raw;
 
+  // Extract JSON object
   const braceStart = text.indexOf("{");
   const braceEnd = text.lastIndexOf("}");
   if (braceStart === -1) {
-    return text;
+    return JSON.parse(text);
   }
 
-  let json = braceEnd > braceStart ? text.slice(braceStart, braceEnd + 1) : text.slice(braceStart);
+  const json = braceEnd > braceStart ? text.slice(braceStart, braceEnd + 1) : text.slice(braceStart);
 
   try {
-    JSON.parse(json);
-    return json;
+    return JSON.parse(json);
   } catch {
-    // Attempt to repair truncated JSON by closing open brackets
+    // Attempt to repair truncated JSON
     const repaired = repairTruncatedJson(json);
-    return repaired;
+    return JSON.parse(repaired);
   }
 }
 
 function repairTruncatedJson(json: string): string {
-  // Remove trailing incomplete string value (e.g. `"sourceText": "some text that got cu`)
-  let fixed = json.replace(/,\s*"[^"]*"?\s*:\s*"[^"]*$/, "");
-  // Also remove trailing incomplete object entry
-  fixed = fixed.replace(/,\s*\{[^}]*$/, "");
+  let fixed = json;
 
-  // Count unclosed brackets
-  let openBraces = 0;
-  let openBrackets = 0;
+  // Close any unclosed string
   let inString = false;
   let escape = false;
   for (const ch of fixed) {
     if (escape) { escape = false; continue; }
     if (ch === "\\") { escape = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === "{") openBraces++;
-    if (ch === "}") openBraces--;
-    if (ch === "[") openBrackets++;
-    if (ch === "]") openBrackets--;
+    if (ch === '"') { inString = !inString; }
+  }
+  if (inString) {
+    fixed += '"';
   }
 
-  for (let i = 0; i < openBrackets; i++) fixed += "]";
-  for (let i = 0; i < openBraces; i++) fixed += "}";
+  // Remove last incomplete key-value or object
+  // Try progressively removing trailing content until brackets balance
+  const attempts = [
+    fixed,
+    fixed.replace(/,\s*"[^"]*"\s*:\s*"[^"]*"\s*$/, ""),
+    fixed.replace(/,\s*\{[^{}]*$/, ""),
+    fixed.replace(/,\s*"[^"]*"\s*$/, ""),
+  ];
+
+  for (const attempt of attempts) {
+    let braces = 0;
+    let brackets = 0;
+    let inStr = false;
+    let esc = false;
+    for (const ch of attempt) {
+      if (esc) { esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === "{") braces++;
+      if (ch === "}") braces--;
+      if (ch === "[") brackets++;
+      if (ch === "]") brackets--;
+    }
+
+    let closed = attempt;
+    for (let i = 0; i < brackets; i++) closed += "]";
+    for (let i = 0; i < braces; i++) closed += "}";
+
+    try {
+      return closed;
+    } catch {
+      continue;
+    }
+  }
 
   return fixed;
 }
@@ -110,7 +137,7 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
     },
     body: JSON.stringify({
       model: env.openRouterAsrModel,
-      max_tokens: 4096,
+      max_tokens: 8192,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -123,7 +150,7 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
           content: [
             {
               type: "text",
-              text: "Transcribe this English podcast audio. Keep the wording faithful. Return 8-24 timestamped segments. Return ONLY valid JSON, no code fences.",
+              text: "Transcribe this English podcast audio. Keep the wording faithful. Return 6-12 timestamped segments. Return ONLY valid JSON, no code fences.",
             },
             {
               type: "input_audio",
@@ -151,7 +178,7 @@ export async function transcribeAudio(audioPath: string): Promise<TranscriptSegm
     throw new Error("OpenRouter transcription returned an empty response.");
   }
 
-  const parsed = JSON.parse(extractJson(content)) as { segments?: TranscriptSegment[] };
+  const parsed = safeJsonParse(content) as { segments?: TranscriptSegment[] };
   if (!parsed.segments || parsed.segments.length === 0) {
     throw new Error("Transcription response did not include segments.");
   }
@@ -179,7 +206,7 @@ export async function translateSegments(
     },
     body: JSON.stringify({
       model: env.openRouterTranslationModel,
-      max_tokens: 4096,
+      max_tokens: 8192,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -209,7 +236,7 @@ export async function translateSegments(
     throw new Error("OpenRouter translation returned an empty response.");
   }
 
-  const parsed = JSON.parse(extractJson(content)) as { segments?: TranscriptSegment[] };
+  const parsed = safeJsonParse(content) as { segments?: TranscriptSegment[] };
   if (!parsed.segments || parsed.segments.length === 0) {
     throw new Error("Translation response did not include segments.");
   }
